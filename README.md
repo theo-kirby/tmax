@@ -33,12 +33,15 @@ that later: TPM runs every `*.tmux` file in a plugin folder.)
 
 ```
 +-----------+-----------------------------------+
-| SESSIONS  |                                   |
-| ● work    |   your current session            |
-|   notes   |                                   |
+| ● work    |                                   |
+|   notes   |   your current session            |
 |   scratch |                                   |
+|           |                                   |
 +-----------+-----------------------------------+
 ```
+
+The sidebar shows only the session names. No header, no help text. The keys
+are listed below. The bottom line is used for prompts and short messages.
 
 `prefix + s` does one of three things:
 

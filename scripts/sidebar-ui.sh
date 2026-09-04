@@ -76,8 +76,6 @@ render() {
   read -r rows cols < <(stty size 2>/dev/null || echo "24 $width")
   local el; el="$(tput el)"
   tput home
-  printf '%s%s SESSIONS%s%s\n' "$BOLD" "$CYAN" "$RST" "$el"
-  printf '%s%s%s%s\n' "$DIM" "$(printf '%*s' "$cols" '' | tr ' ' '-')" "$RST" "$el"
   for i in "${!names[@]}"; do
     name="${names[$i]}"; info="${infos[$i]}"
     if [ "$name" = "$current" ]; then mark="●"; else mark=" "; fi
@@ -97,11 +95,8 @@ render() {
   # blank the gap between the list and the footer
   tput ed
 
-  # footer
-  tput cup $((rows - 4)) 0
-  printf '%s%s%s%s\n' "$DIM" "$(printf '%*s' "$cols" '' | tr ' ' '-')" "$RST" "$el"
-  printf '%s j/k move  ⏎ go  n new%s%s\n' "$DIM" "$RST" "$el"
-  printf '%s d del  r rename  q close%s%s\n' "$DIM" "$RST" "$el"
+  # bottom line: short messages and prompts
+  tput cup $((rows - 1)) 0
   printf '%s%s%s%s' "$YELLOW" "${status:0:$((cols - 1))}" "$RST" "$el"
 }
 
