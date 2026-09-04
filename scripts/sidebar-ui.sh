@@ -74,9 +74,10 @@ select_current() {
 render() {
   local cols rows i mark name info line pad
   read -r rows cols < <(stty size 2>/dev/null || echo "24 $width")
-  tput clear
-  printf '%s%s SESSIONS%s\n' "$BOLD" "$CYAN" "$RST"
-  printf '%s%s%s\n' "$DIM" "$(printf '%*s' "$cols" '' | tr ' ' '-')" "$RST"
+  local el; el="$(tput el)"
+  tput home
+  printf '%s%s SESSIONS%s%s\n' "$BOLD" "$CYAN" "$RST" "$el"
+  printf '%s%s%s%s\n' "$DIM" "$(printf '%*s' "$cols" '' | tr ' ' '-')" "$RST" "$el"
   for i in "${!names[@]}"; do
     name="${names[$i]}"; info="${infos[$i]}"
     if [ "$name" = "$current" ]; then mark="●"; else mark=" "; fi
@@ -85,21 +86,29 @@ render() {
     [ "$pad" -lt 1 ] && pad=1
     line="$(printf ' %s %s%*s%s ' "$mark" "$name" "$pad" '' "$info")"
     if [ "$i" -eq "$sel" ]; then
-      printf '%s%s%s\n' "$REV" "$line" "$RST"
+      printf '%s%s%s%s\n' "$REV" "$line" "$RST" "$el"
     elif [ "$name" = "$current" ]; then
-      printf '%s%s%s\n' "$GREEN" "$line" "$RST"
+      printf '%s%s%s%s\n' "$GREEN" "$line" "$RST" "$el"
     else
-      printf '%s\n' "$line"
+      printf '%s%s\n' "$line" "$el"
     fi
   done
-  [ "${#names[@]}" -eq 0 ] && printf '%s (no sessions)%s\n' "$DIM" "$RST"
+  [ "${#names[@]}" -eq 0 ] && printf '%s (no sessions)%s%s\n' "$DIM" "$RST" "$el"
+  # blank the gap between the list and the footer
+  tput ed
 
   # footer
   tput cup $((rows - 4)) 0
-  printf '%s%s%s\n' "$DIM" "$(printf '%*s' "$cols" '' | tr ' ' '-')" "$RST"
-  printf '%s j/k move  ⏎ go  n new%s\n' "$DIM" "$RST"
-  printf '%s d del  r rename  q close%s\n' "$DIM" "$RST"
-  printf '%s%s%s' "$YELLOW" "${status:0:$((cols - 1))}" "$RST"
+  printf '%s%s%s%s\n' "$DIM" "$(printf '%*s' "$cols" '' | tr ' ' '-')" "$RST" "$el"
+  printf '%s j/k move  ⏎ go  n new%s%s\n' "$DIM" "$RST" "$el"
+  printf '%s d del  r rename  q close%s%s\n' "$DIM" "$RST" "$el"
+  printf '%s%s%s%s' "$YELLOW" "${status:0:$((cols - 1))}" "$RST" "$el"
+}
+
+# Everything the screen depends on, as one string. Redraw only when it changes.
+snapshot() {
+  local size; size="$(stty size 2>/dev/null)"
+  printf '%s|%s|%s|%s|%s|%s' "$size" "$sel" "$current" "$status" "${names[*]-}" "${infos[*]-}"
 }
 
 focus_work_pane() {
@@ -180,8 +189,10 @@ if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then ESC_WAIT=0.05; else ESC_WAIT=1; fi
 
 load
 select_current
+last_snapshot=""
 while :; do
-  render
+  snap="$(snapshot)"
+  if [ "$snap" != "$last_snapshot" ]; then render; last_snapshot="$snap"; fi
   key=""
   # 1s timeout so the list refreshes and picks up resizes on its own.
   # NOTE: bash 3.2 returns 1 on timeout, bash 4+ returns >128. Treat any
