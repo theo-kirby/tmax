@@ -56,7 +56,8 @@ Keys inside the sidebar:
 | Key           | Action                                             |
 |---------------|----------------------------------------------------|
 | `j` `k` arrows| move                                               |
-| `Enter`       | go to session. Sidebar follows. Focus goes to work |
+| `Tab`         | go to session, keep focus in the sidebar           |
+| `Enter`       | go to session and close the sidebar                |
 | `n`           | new session                                        |
 | `r`           | rename session                                     |
 | `d`           | kill session (asks `y`/`N`)                        |

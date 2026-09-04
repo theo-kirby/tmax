@@ -56,11 +56,12 @@ state("attached, no sidebar")
 
 send("\x02s", 1.2); state("after prefix+s (open)"); show_sidebar()
 send("j", 0.4); show_sidebar()
-send("\r", 1.2); state("after j + Enter (should be beta, focus on work pane)"); show_sidebar()
+send("\t", 1.2); state("after j + Tab (should be beta, sidebar still focused)"); show_sidebar()
+send("\x1b", 0.5); state("after Esc (focus on work pane, sidebar open)")
 send("\x02s", 0.8); state("prefix+s again (should focus sidebar, not close)")
-send("j", 0.3); send("\r", 1.2); state("j + Enter again (should be gamma)")
+send("j", 0.3); send("\r", 1.2); state("j + Enter (should be gamma, sidebar closed)")
+send("\x02s", 1.2); state("prefix+s (reopen in gamma)")
 # external session switch -> hook should move the sidebar
-send("\x02s", 0.8)  # focus sidebar
 send("\x1b", 0.5)   # esc -> focus work pane
 t("switch-client", "-t", "alpha"); time.sleep(1.0)
 state("after external switch-client to alpha (hook follow)")

@@ -4,7 +4,8 @@
 #
 # Keys:
 #   j / k / arrows   move
-#   Enter            switch to session (sidebar follows, focus goes to your work pane)
+#   Tab              switch to session, keep focus in the sidebar
+#   Enter            switch to session and close the sidebar
 #   n                new session
 #   r                rename session
 #   d                kill session (asks y/n)
@@ -112,14 +113,21 @@ focus_work_pane() {
 }
 
 # Switch the client to a session and bring the sidebar along.
+#   goto NAME          switch, focus stays in the sidebar
+#   goto NAME work     switch, focus goes to the work pane
+#   goto NAME close    switch, then close the sidebar
 goto() {
-  local target="$1"
+  local target="$1" after="${2:-}"
   [ -z "$target" ] && return
   if [ "$target" != "$current" ]; then
     tmux switch-client -t "$target" || { status="switch failed"; return; }
     tmux join-pane -fhb -l "$width" -d -s "$ME" -t "${target}:" 2>/dev/null
   fi
-  focus_work_pane
+  case "$after" in
+    work)  focus_work_pane ;;
+    close) focus_work_pane; exit 0 ;;
+    *)     tmux select-pane -t "$ME" ;;
+  esac
 }
 
 ask() {
@@ -138,7 +146,7 @@ new_session() {
   name="$(ask 'new session name: ')"
   [ -z "$name" ] && { status="cancelled"; return; }
   if tmux new-session -d -s "$name" 2>/dev/null; then
-    load; goto "$name"
+    load; goto "$name" work
   else
     status="could not create '$name'"
   fi
@@ -177,10 +185,16 @@ kill_session() {
 }
 
 # --- main loop ---------------------------------------------------------------
-# bash 3.2 (macOS default) only takes whole seconds for read -t; bash 4+ takes
-# fractions. This only affects how long a bare Esc waits for the rest of an
-# arrow-key sequence.
-if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then ESC_WAIT=0.05; else ESC_WAIT=1; fi
+# After an Esc byte, read up to 2 more bytes but give up after 0.1s. This tells
+# a bare Esc apart from an arrow key. bash 3.2 (macOS default) cannot do
+# fractional read -t, so use the tty's own timer (stty time = tenths of a second).
+read_escape_rest() {
+  local saved
+  saved="$(stty -g)"
+  stty -icanon -echo min 0 time 1
+  dd bs=1 count=2 2>/dev/null
+  stty "$saved"
+}
 
 load
 select_current
@@ -200,8 +214,7 @@ while :; do
   case "$key" in
     $'\e')
       # Escape sequence (arrow keys) or a bare Esc.
-      seq=""
-      IFS= read -rsn2 -t "$ESC_WAIT" seq
+      seq="$(read_escape_rest)"
       case "$seq" in
         '[A') key="k" ;;
         '[B') key="j" ;;
@@ -209,7 +222,8 @@ while :; do
         *)    key="esc" ;;
       esac
       ;;
-    "") key="enter" ;;
+    "")    key="enter" ;;
+    $'\t') key="tab" ;;
   esac
   n=${#names[@]}
   case "$key" in
@@ -217,7 +231,8 @@ while :; do
     k)     [ "$n" -gt 0 ] && sel=$(( (sel - 1 + n) % n )) ;;
     g)     sel=0 ;;
     G)     [ "$n" -gt 0 ] && sel=$((n - 1)) ;;
-    enter) [ "$n" -gt 0 ] && goto "${names[$sel]}" ;;
+    tab)   [ "$n" -gt 0 ] && goto "${names[$sel]}" ;;
+    enter) [ "$n" -gt 0 ] && goto "${names[$sel]}" close ;;
     n)     new_session ;;
     r)     rename_session ;;
     d)     kill_session ;;
