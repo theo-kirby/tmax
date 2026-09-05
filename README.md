@@ -61,13 +61,44 @@ Keys inside the sidebar:
 | `n`           | new session                                        |
 | `r`           | rename session                                     |
 | `d`           | kill session (asks `y`/`N`)                        |
+| `Space` `h`   | fold / unfold the group the cursor is in           |
+| `t`           | tag: put the session in a group (`-` = no group)   |
 | `Esc` or `l`  | focus work pane, keep sidebar open                 |
 | `q`           | close sidebar                                      |
+
+On a group line, `Tab` and `Enter` also fold / unfold. `n` creates the new
+session inside the group the cursor is in. `r` on a group line renames the
+group.
 
 The sidebar follows you. If you change session another way (for example
 `prefix + (`), the sidebar moves to the new session too.
 
 The stock tmux session tree is still there on `prefix + S`.
+
+### Groups
+
+Sessions can be put in groups, like folders. Press `t` on a session and type
+a group name. Sessions without a group stay at the top. Groups come after,
+sorted by name.
+
+```
++-----------+
+|   scratch |
+| ▸ work  3 |    folded: shows the session count
+| ▾ personal|
+|   ● notes |
+|     blog  |
++-----------+
+```
+
+Press `Space` (or `h`) to fold or unfold the group the cursor is in. A folded
+group is one line. If you are inside a folded group, its line is green.
+
+Groups are saved to `~/.local/state/tmax/groups`, fold state to
+`~/.local/state/tmax/collapsed`. Both survive a tmux restart. A session name
+remembers its group: if you kill `notes` and later create `notes` again, it is
+back in `personal`. Set `TMAX_STATE_DIR` in the tmux environment to use a
+different folder.
 
 ### Options
 

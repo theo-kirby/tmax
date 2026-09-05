@@ -6,12 +6,21 @@
 #   j / k / arrows   move
 #   Tab              switch to session, keep focus in the sidebar
 #   Enter            switch to session and close the sidebar
-#   n                new session
-#   r                rename session
+#   Space            fold / unfold the group under the cursor
+#   h / Left         same as Space (vim-style)
+#   t                tag: put the selected session in a group ("-" = no group)
+#   n                new session, in the group the cursor is in
+#   r                rename session, or rename the group when on a group line
 #   d                kill session (asks y/n)
 #   Esc / l          focus your work pane, keep sidebar open
 #   q                close sidebar
 #   R                refresh list
+#
+# On a group line, Tab and Enter also fold / unfold.
+#
+# Groups and fold state live in $TMAX_STATE_DIR (default ~/.local/state/tmax):
+#   groups      one "session<TAB>group" line per tagged session
+#   collapsed   one group name per line
 
 set -u
 OPT="@tmax-sidebar-pane"
@@ -22,6 +31,11 @@ if [ -n "${TMAX_DEBUG:-}" ]; then exec 2>>"$TMAX_DEBUG"; set -x; fi
 
 width="$(tmux show-option -gqv "@tmax-sidebar-width")"
 width="${width:-28}"
+
+STATE="${TMAX_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tmax}"
+GROUPS_FILE="$STATE/groups"
+FOLD_FILE="$STATE/collapsed"
+mkdir -p "$STATE" 2>/dev/null
 
 # --- colours ---------------------------------------------------------------
 if [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
@@ -43,56 +57,179 @@ trap 'exit 0' TERM INT HUP
 tput smcup 2>/dev/null
 tput civis 2>/dev/null
 
-# --- state -----------------------------------------------------------------
-names=()      # session names
-infos=()      # "windows attached" per session
-sel=0
-current=""    # session the sidebar currently lives in
-status=""     # one-line message shown at bottom
+# --- saved state: groups and folds ------------------------------------------
+# The groups file is read once per load() into these two parallel arrays.
+gs_name=()
+gs_group=()
 
-load() {
-  names=(); infos=()
+read_groups_file() {
+  gs_name=(); gs_group=()
+  [ -f "$GROUPS_FILE" ] || return 0
   local line
   while IFS= read -r line; do
-    names+=("${line%%	*}")
-    infos+=("${line#*	}")
+    gs_name+=("${line%%	*}"); gs_group+=("${line#*	}")
+  done < "$GROUPS_FILE"
+}
+
+lookup_group() {   # lookup_group SESSION -> echoes its group ("" = none)
+  local i
+  for i in ${gs_name[@]+"${!gs_name[@]}"}; do
+    [ "${gs_name[$i]}" = "$1" ] && { printf '%s' "${gs_group[$i]}"; return; }
+  done
+}
+
+set_group() {      # set_group SESSION GROUP   ("" removes the tag)
+  local name="$1" group="$2" line
+  {
+    if [ -f "$GROUPS_FILE" ]; then
+      while IFS= read -r line; do
+        if [ "${line%%	*}" != "$name" ]; then printf '%s\n' "$line"; fi
+      done < "$GROUPS_FILE"
+    fi
+    if [ -n "$group" ]; then printf '%s\t%s\n' "$name" "$group"; fi
+  } > "$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+}
+
+rename_group_everywhere() {   # rename_group_everywhere OLD NEW
+  local old="$1" new="$2" line
+  if [ -f "$GROUPS_FILE" ]; then
+    {
+      while IFS= read -r line; do
+        if [ "${line#*	}" = "$old" ]; then printf '%s\t%s\n' "${line%%	*}" "$new"
+        else printf '%s\n' "$line"; fi
+      done < "$GROUPS_FILE"
+    } > "$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+  fi
+  if is_folded "$old"; then unfold "$old"; fold "$new"; fi
+}
+
+is_folded() { [ -f "$FOLD_FILE" ] && grep -qxF -- "$1" "$FOLD_FILE"; }
+
+fold() { is_folded "$1" || printf '%s\n' "$1" >> "$FOLD_FILE"; }
+
+unfold() {
+  local line
+  [ -f "$FOLD_FILE" ] || return 0
+  {
+    while IFS= read -r line; do
+      if [ "$line" != "$1" ]; then printf '%s\n' "$line"; fi
+    done < "$FOLD_FILE"
+  } > "$FOLD_FILE.tmp" && mv "$FOLD_FILE.tmp" "$FOLD_FILE"
+}
+
+toggle_fold() { if is_folded "$1"; then unfold "$1"; else fold "$1"; fi; }
+
+# --- screen state ------------------------------------------------------------
+# The list is a flat array of visible rows. Each row is one of:
+#   S  a session          rname = session name,  rinfo = "2w *", rgroup = its group
+#   G  an open group      rname = group name,    rinfo = ""
+#   F  a folded group     rname = group name,    rinfo = session count
+rtype=(); rname=(); rinfo=(); rgroup=()
+sel=0
+current=""        # session the sidebar currently lives in
+current_group=""  # its group
+status=""         # one-line message shown at bottom
+nsessions=0
+
+add_row() { rtype+=("$1"); rname+=("$2"); rinfo+=("$3"); rgroup+=("$4"); }
+
+load() {
+  local line i group count
+  local snames=() sinfos=() sgroups=() glist=()
+
+  # 1. live sessions, sorted
+  while IFS= read -r line; do
+    snames+=("${line%%	*}"); sinfos+=("${line#*	}")
   done < <(tmux list-sessions -F '#{session_name}	#{session_windows}w#{?session_attached, *,}' 2>/dev/null | sort -f)
+  nsessions=${#snames[@]}
   current="$(tmux display-message -p -t "$ME" '#{session_name}')"
-  local n=${#names[@]}
+
+  # 2. the group of each session, and the sorted list of groups in use
+  read_groups_file
+  for i in ${snames[@]+"${!snames[@]}"}; do
+    sgroups[$i]="$(lookup_group "${snames[$i]}")"
+  done
+  current_group="$(lookup_group "$current")"
+  if [ "$nsessions" -gt 0 ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && glist+=("$line")
+    done < <(printf '%s\n' "${sgroups[@]}" | sort -fu)
+  fi
+
+  # 3. rows: ungrouped sessions first (flat), then one block per group
+  rtype=(); rname=(); rinfo=(); rgroup=()
+  for i in ${snames[@]+"${!snames[@]}"}; do
+    [ -z "${sgroups[$i]}" ] && add_row S "${snames[$i]}" "${sinfos[$i]}" ""
+  done
+  for group in ${glist[@]+"${glist[@]}"}; do
+    if is_folded "$group"; then
+      count=0
+      for i in "${!snames[@]}"; do
+        [ "${sgroups[$i]}" = "$group" ] && count=$((count + 1))
+      done
+      add_row F "$group" "$count" "$group"
+    else
+      add_row G "$group" "" "$group"
+      for i in "${!snames[@]}"; do
+        [ "${sgroups[$i]}" = "$group" ] && add_row S "${snames[$i]}" "${sinfos[$i]}" "$group"
+      done
+    fi
+  done
+
+  local n=${#rtype[@]}
   [ "$n" -eq 0 ] && sel=0
   [ "$sel" -ge "$n" ] && [ "$n" -gt 0 ] && sel=$((n - 1))
   [ "$sel" -lt 0 ] && sel=0
 }
 
-# Put the cursor on the current session (used once at start).
-select_current() {
+# Put the cursor on a session. If its group is folded, on the group line.
+select_session() {
   local i
-  for i in "${!names[@]}"; do
-    [ "${names[$i]}" = "$current" ] && { sel=$i; return; }
+  for i in ${rtype[@]+"${!rtype[@]}"}; do
+    [ "${rtype[$i]}" = "S" ] && [ "${rname[$i]}" = "$1" ] && { sel=$i; return; }
+  done
+  select_group "$(lookup_group "$1")"
+}
+
+# Put the cursor on a group line (open or folded).
+select_group() {
+  local i
+  [ -z "$1" ] && return
+  for i in ${rtype[@]+"${!rtype[@]}"}; do
+    [ "${rtype[$i]}" != "S" ] && [ "${rname[$i]}" = "$1" ] && { sel=$i; return; }
   done
 }
 
 render() {
-  local cols rows i mark name info line pad
+  local cols rows i type name info group mark indent line pad
   read -r rows cols < <(stty size 2>/dev/null || echo "24 $width")
   local el; el="$(tput el)"
   tput home
-  for i in "${!names[@]}"; do
-    name="${names[$i]}"; info="${infos[$i]}"
-    if [ "$name" = "$current" ]; then mark="●"; else mark=" "; fi
+  for i in ${rtype[@]+"${!rtype[@]}"}; do
+    type="${rtype[$i]}"; name="${rname[$i]}"; info="${rinfo[$i]}"; group="${rgroup[$i]}"
+    case "$type" in
+      S) if [ "$name" = "$current" ]; then mark="●"; else mark=" "; fi
+         if [ -n "$group" ]; then indent="   "; else indent=" "; fi ;;
+      G) mark="▾"; indent=" " ;;
+      F) mark="▸"; indent=" " ;;
+    esac
     # name on the left, info on the right, fit to the pane width
-    pad=$((cols - 3 - ${#name} - ${#info} - 1))
+    pad=$((cols - ${#indent} - 2 - ${#name} - ${#info} - 1))
     [ "$pad" -lt 1 ] && pad=1
-    line="$(printf ' %s %s%*s%s ' "$mark" "$name" "$pad" '' "$info")"
+    line="$(printf '%s%s %s%*s%s ' "$indent" "$mark" "$name" "$pad" '' "$info")"
     if [ "$i" -eq "$sel" ]; then
       printf '%s%s%s%s\n' "$REV" "$line" "$RST" "$el"
-    elif [ "$name" = "$current" ]; then
+    elif [ "$type" = "S" ] && [ "$name" = "$current" ]; then
       printf '%s%s%s%s\n' "$GREEN" "$line" "$RST" "$el"
+    elif [ "$type" = "F" ] && [ "$name" = "$current_group" ]; then
+      printf '%s%s%s%s%s\n' "$BOLD" "$GREEN" "$line" "$RST" "$el"
+    elif [ "$type" != "S" ]; then
+      printf '%s%s%s%s\n' "$BOLD" "$line" "$RST" "$el"
     else
       printf '%s%s\n' "$line" "$el"
     fi
   done
-  [ "${#names[@]}" -eq 0 ] && printf '%s (no sessions)%s%s\n' "$DIM" "$RST" "$el"
+  [ "${#rtype[@]}" -eq 0 ] && printf '%s (no sessions)%s%s\n' "$DIM" "$RST" "$el"
   # blank the gap between the list and the footer
   tput ed
 
@@ -104,7 +241,8 @@ render() {
 # Everything the screen depends on, as one string. Redraw only when it changes.
 snapshot() {
   local size; size="$(stty size 2>/dev/null)"
-  printf '%s|%s|%s|%s|%s|%s' "$size" "$sel" "$current" "$status" "${names[*]-}" "${infos[*]-}"
+  printf '%s|%s|%s|%s|%s|%s|%s|%s' "$size" "$sel" "$current" "$current_group" "$status" \
+    "${rtype[*]-}" "${rname[*]-}" "${rinfo[*]-}"
 }
 
 focus_work_pane() {
@@ -141,40 +279,87 @@ ask() {
   printf '%s' "$answer"
 }
 
+# --- row helpers ---------------------------------------------------------------
+on_row()     { [ "${#rtype[@]}" -gt 0 ]; }
+row_type()   { printf '%s' "${rtype[$sel]}"; }
+row_name()   { printf '%s' "${rname[$sel]}"; }
+row_group()  { printf '%s' "${rgroup[$sel]}"; }
+on_session() { on_row && [ "$(row_type)" = "S" ]; }
+
+# Space / h: fold or unfold the group the cursor is in.
+fold_here() {
+  on_row || return
+  local group; group="$(row_group)"
+  [ -z "$group" ] && { status="not in a group"; return; }
+  toggle_fold "$group"
+  load; select_group "$group"
+}
+
+# Tab / Enter: go to the session, or fold/unfold when on a group line.
+activate() {
+  on_row || return
+  if on_session; then goto "$(row_name)" "${1:-}"; else fold_here; fi
+}
+
+# --- actions --------------------------------------------------------------------
+tag_session() {
+  on_session || { status="select a session to tag"; return; }
+  local name group
+  name="$(row_name)"
+  group="$(ask "group for '$name' (- = none): ")"
+  [ -z "$group" ] && { status="cancelled"; return; }
+  [ "$group" = "-" ] && group=""
+  set_group "$name" "$group"
+  if [ -n "$group" ]; then status="'$name' -> $group"; else status="'$name' has no group"; fi
+  load; select_session "$name"
+}
+
 new_session() {
-  local name
+  local name group=""
+  on_row && group="$(row_group)"
   name="$(ask 'new session name: ')"
   [ -z "$name" ] && { status="cancelled"; return; }
   if tmux new-session -d -s "$name" 2>/dev/null; then
-    load; goto "$name" work
+    [ -n "$group" ] && set_group "$name" "$group"
+    load; goto "$name" work; select_session "$name"
   else
     status="could not create '$name'"
   fi
 }
 
 rename_session() {
-  [ "${#names[@]}" -eq 0 ] && return
-  local old="${names[$sel]}" new
-  new="$(ask "rename '$old' to: ")"
-  [ -z "$new" ] && { status="cancelled"; return; }
-  if tmux rename-session -t "$old" "$new" 2>/dev/null; then
-    status="renamed"
+  on_row || return
+  local old new
+  old="$(row_name)"
+  if on_session; then
+    new="$(ask "rename '$old' to: ")"
+    [ -z "$new" ] && { status="cancelled"; return; }
+    if tmux rename-session -t "$old" "$new" 2>/dev/null; then
+      set_group "$new" "$(lookup_group "$old")"
+      set_group "$old" ""
+      status="renamed"
+      load; select_session "$new"
+    else
+      status="rename failed"
+    fi
   else
-    status="rename failed"
+    new="$(ask "rename group '$old' to: ")"
+    [ -z "$new" ] && { status="cancelled"; return; }
+    rename_group_everywhere "$old" "$new"
+    status="group renamed"
+    load; select_group "$new"
   fi
 }
 
 kill_session() {
-  [ "${#names[@]}" -eq 0 ] && return
-  local target="${names[$sel]}" yn other i
+  on_session || { status="select a session to kill"; return; }
+  local target yn other i
+  target="$(row_name)"
   yn="$(ask "kill '$target'? [y/N] ")"
   [ "$yn" = "y" ] || [ "$yn" = "Y" ] || { status="cancelled"; return; }
   if [ "$target" = "$current" ]; then
     # Move ourselves (and the client) somewhere else first, or we die with it.
-    other=""
-    for i in "${!names[@]}"; do
-      [ "${names[$i]}" != "$target" ] && { other="${names[$i]}"; break; }
-    done
+    other="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -vx -- "$target" | head -1)"
     if [ -n "$other" ]; then
       goto "$other"
       tmux select-pane -t "$ME"
@@ -197,7 +382,7 @@ read_escape_rest() {
 }
 
 load
-select_current
+select_session "$current"
 last_snapshot=""
 while :; do
   snap="$(snapshot)"
@@ -219,26 +404,30 @@ while :; do
         '[A') key="k" ;;
         '[B') key="j" ;;
         '[C') key="l" ;;
+        '[D') key="h" ;;
         *)    key="esc" ;;
       esac
       ;;
     "")    key="enter" ;;
     $'\t') key="tab" ;;
+    " ")   key="space" ;;
   esac
-  n=${#names[@]}
+  n=${#rtype[@]}
   case "$key" in
-    j)     [ "$n" -gt 0 ] && sel=$(( (sel + 1) % n )) ;;
-    k)     [ "$n" -gt 0 ] && sel=$(( (sel - 1 + n) % n )) ;;
-    g)     sel=0 ;;
-    G)     [ "$n" -gt 0 ] && sel=$((n - 1)) ;;
-    tab)   [ "$n" -gt 0 ] && goto "${names[$sel]}" ;;
-    enter) [ "$n" -gt 0 ] && goto "${names[$sel]}" close ;;
-    n)     new_session ;;
-    r)     rename_session ;;
-    d)     kill_session ;;
-    R)     status="refreshed" ;;
-    esc|l) focus_work_pane ;;
-    q)     exit 0 ;;
+    j)       [ "$n" -gt 0 ] && sel=$(( (sel + 1) % n )) ;;
+    k)       [ "$n" -gt 0 ] && sel=$(( (sel - 1 + n) % n )) ;;
+    g)       sel=0 ;;
+    G)       [ "$n" -gt 0 ] && sel=$((n - 1)) ;;
+    tab)     activate ;;
+    enter)   activate close ;;
+    space|h) fold_here ;;
+    t)       tag_session ;;
+    n)       new_session ;;
+    r)       rename_session ;;
+    d)       kill_session ;;
+    R)       status="refreshed" ;;
+    esc|l)   focus_work_pane ;;
+    q)       exit 0 ;;
   esac
   load
 done
