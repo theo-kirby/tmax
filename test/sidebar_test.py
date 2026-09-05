@@ -79,7 +79,7 @@ show_sidebar()
 # ---- groups ---------------------------------------------------------------
 def files(label):
     print(f" --- state files ({label}) ---")
-    for f in ("groups", "collapsed"):
+    for f in ("groups", "order", "collapsed"):
         path = os.path.join(STATE, f)
         body = open(path).read() if os.path.exists(path) else "(missing)"
         print(f"  {f}: {body!r}")
@@ -101,6 +101,14 @@ send("\x02s", 0.8); send("r", 0.5); send("home\r", 1.0)   # cursor sits on the p
 print("\n== after renaming group personal -> home (expect: '▸ home 2', still folded)"); show_sidebar(); files("group renamed")
 send("G", 0.3); send(" ", 0.8)
 print("\n== after Space on work line (expect: work unfolded, alpha visible)"); show_sidebar()
+
+# ---- reorder --------------------------------------------------------------
+send("K", 0.8)
+print("\n== after K on work line (expect: work above home)"); show_sidebar(); files("work moved up")
+send("K", 0.8)
+print("\n== after K again (expect: no change, work is already first)"); show_sidebar()
+send("G", 0.3); send(" ", 0.8); send("G", 0.3); send("K", 0.8)
+print("\n== after unfolding home, G, K (expect: eps above delta, cursor on eps)"); show_sidebar(); files("eps moved up")
 
 # close with q
 send("q", 1.0); state("after q (sidebar closed)")

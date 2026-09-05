@@ -63,6 +63,7 @@ Keys inside the sidebar:
 | `d`           | kill session (asks `y`/`N`)                        |
 | `Space` `h`   | fold / unfold the group the cursor is in           |
 | `t`           | tag: put the session in a group (`-` = no group)   |
+| `J` `K`       | move the group, or the session in its group, down/up |
 | `Esc` or `l`  | focus work pane, keep sidebar open                 |
 | `q`           | close sidebar                                      |
 
@@ -94,8 +95,13 @@ sorted by name.
 Press `Space` (or `h`) to fold or unfold the group the cursor is in. A folded
 group is one line. If you are inside a folded group, its line is green.
 
-Groups are saved to `~/.local/state/tmax/groups`, fold state to
-`~/.local/state/tmax/collapsed`. Both survive a tmux restart. A session name
+Press `J` or `K` to move things. On a group line, the group moves down or up.
+On a session line, the session moves inside its group. New groups and new
+sessions go to the end, in name order, until you move them.
+
+Groups and the session order are saved to `~/.local/state/tmax/groups`, the
+group order to `~/.local/state/tmax/order`, and fold state to
+`~/.local/state/tmax/collapsed`. All survive a tmux restart. A session name
 remembers its group: if you kill `notes` and later create `notes` again, it is
 back in `personal`. Set `TMAX_STATE_DIR` in the tmux environment to use a
 different folder.

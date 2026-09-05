@@ -8,6 +8,7 @@
 #   Enter            switch to session and close the sidebar
 #   Space            fold / unfold the group under the cursor
 #   h / Left         same as Space (vim-style)
+#   J / K            move the group, or the session inside its group, down / up
 #   t                tag: put the selected session in a group ("-" = no group)
 #   n                new session, in the group the cursor is in
 #   r                rename session, or rename the group when on a group line
@@ -19,7 +20,9 @@
 # On a group line, Tab and Enter also fold / unfold.
 #
 # Groups and fold state live in $TMAX_STATE_DIR (default ~/.local/state/tmax):
-#   groups      one "session<TAB>group" line per tagged session
+#   groups      one "session<TAB>group" line per tagged session; line order
+#               is the order of sessions inside a group
+#   order       one group name per line, top to bottom
 #   collapsed   one group name per line
 
 set -u
@@ -35,6 +38,7 @@ width="${width:-28}"
 STATE="${TMAX_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tmax}"
 GROUPS_FILE="$STATE/groups"
 FOLD_FILE="$STATE/collapsed"
+ORDER_FILE="$STATE/order"
 mkdir -p "$STATE" 2>/dev/null
 
 # --- colours ---------------------------------------------------------------
@@ -100,7 +104,47 @@ rename_group_everywhere() {   # rename_group_everywhere OLD NEW
       done < "$GROUPS_FILE"
     } > "$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
   fi
+  if [ -f "$ORDER_FILE" ]; then
+    {
+      while IFS= read -r line; do
+        if [ "$line" = "$old" ]; then printf '%s\n' "$new"; else printf '%s\n' "$line"; fi
+      done < "$ORDER_FILE"
+    } > "$ORDER_FILE.tmp" && mv "$ORDER_FILE.tmp" "$ORDER_FILE"
+  fi
   if is_folded "$old"; then unfold "$old"; fold "$new"; fi
+}
+
+in_list() {   # in_list NEEDLE ITEM...
+  local needle="$1" item; shift
+  for item in "$@"; do [ "$item" = "$needle" ] && return 0; done
+  return 1
+}
+
+# write_session_order GROUP NAME...  rewrite the groups file so the sessions of
+# GROUP come in this order. Ungrouped sessions (GROUP = "") get a line too.
+write_session_order() {
+  local group="$1" name line; shift
+  {
+    if [ -f "$GROUPS_FILE" ]; then
+      while IFS= read -r line; do
+        if [ "${line#*	}" != "$group" ]; then printf '%s\n' "$line"; fi
+      done < "$GROUPS_FILE"
+    fi
+    for name in "$@"; do printf '%s\t%s\n' "$name" "$group"; done
+  } > "$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+}
+
+# write_group_order NAME...  these groups first, then any others already in the file.
+write_group_order() {
+  local line
+  {
+    printf '%s\n' "$@"
+    if [ -f "$ORDER_FILE" ]; then
+      while IFS= read -r line; do
+        if [ -n "$line" ] && ! in_list "$line" "$@"; then printf '%s\n' "$line"; fi
+      done < "$ORDER_FILE"
+    fi
+  } > "$ORDER_FILE.tmp" && mv "$ORDER_FILE.tmp" "$ORDER_FILE"
 }
 
 is_folded() { [ -f "$FOLD_FILE" ] && grep -qxF -- "$1" "$FOLD_FILE"; }
@@ -134,29 +178,52 @@ nsessions=0
 add_row() { rtype+=("$1"); rname+=("$2"); rinfo+=("$3"); rgroup+=("$4"); }
 
 load() {
-  local line i group count
-  local snames=() sinfos=() sgroups=() glist=()
+  local line i j group count
+  local anames=() ainfos=() placed=()
+  local snames=() sinfos=() sgroups=() inuse=() glist=()
 
-  # 1. live sessions, sorted
+  # 1. live sessions, alphabetical
   while IFS= read -r line; do
-    snames+=("${line%%	*}"); sinfos+=("${line#*	}")
+    anames+=("${line%%	*}"); ainfos+=("${line#*	}")
   done < <(tmux list-sessions -F '#{session_name}	#{session_windows}w#{?session_attached, *,}' 2>/dev/null | sort -f)
-  nsessions=${#snames[@]}
+  nsessions=${#anames[@]}
   current="$(tmux display-message -p -t "$ME" '#{session_name}')"
 
-  # 2. the group of each session, and the sorted list of groups in use
+  # 2. put them in display order: the order of the groups file first, then the rest
   read_groups_file
+  for i in ${gs_name[@]+"${!gs_name[@]}"}; do
+    for j in ${anames[@]+"${!anames[@]}"}; do
+      if [ "${anames[$j]}" = "${gs_name[$i]}" ] && [ -z "${placed[$j]:-}" ]; then
+        placed[$j]=1; snames+=("${anames[$j]}"); sinfos+=("${ainfos[$j]}")
+      fi
+    done
+  done
+  for j in ${anames[@]+"${!anames[@]}"}; do
+    [ -z "${placed[$j]:-}" ] && { snames+=("${anames[$j]}"); sinfos+=("${ainfos[$j]}"); }
+  done
+
+  # 3. the group of each session, and the groups in use: order file first, then alphabetical
   for i in ${snames[@]+"${!snames[@]}"}; do
     sgroups[$i]="$(lookup_group "${snames[$i]}")"
   done
   current_group="$(lookup_group "$current")"
   if [ "$nsessions" -gt 0 ]; then
     while IFS= read -r line; do
-      [ -n "$line" ] && glist+=("$line")
+      [ -n "$line" ] && inuse+=("$line")
     done < <(printf '%s\n' "${sgroups[@]}" | sort -fu)
   fi
+  if [ -f "$ORDER_FILE" ]; then
+    while IFS= read -r line; do
+      for j in ${inuse[@]+"${!inuse[@]}"}; do
+        [ "${inuse[$j]}" = "$line" ] && { glist+=("$line"); inuse[$j]=""; }
+      done
+    done < "$ORDER_FILE"
+  fi
+  for j in ${inuse[@]+"${!inuse[@]}"}; do
+    [ -n "${inuse[$j]}" ] && glist+=("${inuse[$j]}")
+  done
 
-  # 3. rows: ungrouped sessions first (flat), then one block per group
+  # 4. rows: ungrouped sessions first (flat), then one block per group
   rtype=(); rname=(); rinfo=(); rgroup=()
   for i in ${snames[@]+"${!snames[@]}"}; do
     [ -z "${sgroups[$i]}" ] && add_row S "${snames[$i]}" "${sinfos[$i]}" ""
@@ -301,6 +368,32 @@ activate() {
   if on_session; then goto "$(row_name)" "${1:-}"; else fold_here; fi
 }
 
+# J / K: move the group, or the session inside its group, one step.
+move_here() {
+  on_row || return
+  local dir="$1" type name group i pos=-1 k tmp sibs=()
+  type="$(row_type)"; name="$(row_name)"; group="$(row_group)"
+  # the rows this one can trade places with, in screen order
+  for i in "${!rtype[@]}"; do
+    if [ "$type" = "S" ]; then
+      [ "${rtype[$i]}" = "S" ] && [ "${rgroup[$i]}" = "$group" ] && sibs+=("${rname[$i]}")
+    else
+      [ "${rtype[$i]}" != "S" ] && sibs+=("${rname[$i]}")
+    fi
+  done
+  for i in "${!sibs[@]}"; do [ "${sibs[$i]}" = "$name" ] && pos=$i; done
+  k=$((pos + dir))
+  if [ "$pos" -lt 0 ] || [ "$k" -lt 0 ] || [ "$k" -ge "${#sibs[@]}" ]; then return; fi
+  tmp="${sibs[$pos]}"; sibs[$pos]="${sibs[$k]}"; sibs[$k]="$tmp"
+  if [ "$type" = "S" ]; then
+    write_session_order "$group" "${sibs[@]}"
+    load; select_session "$name"
+  else
+    write_group_order "${sibs[@]}"
+    load; select_group "$name"
+  fi
+}
+
 # --- actions --------------------------------------------------------------------
 tag_session() {
   on_session || { status="select a session to tag"; return; }
@@ -421,6 +514,8 @@ while :; do
     tab)     activate ;;
     enter)   activate close ;;
     space|h) fold_here ;;
+    J)       move_here 1 ;;
+    K)       move_here -1 ;;
     t)       tag_session ;;
     n)       new_session ;;
     r)       rename_session ;;
