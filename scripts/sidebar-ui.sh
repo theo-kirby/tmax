@@ -3,9 +3,9 @@
 # Works with the bash 3.2 that ships with macOS.
 #
 # Keys:
-#   j / k / arrows   move; the session under the cursor is shown right away
-#                    (hover, option @tmax-sidebar-hover, default on)
+#   j / k / arrows   move
 #   Tab              switch to session, keep focus in the sidebar
+#                    (with option @tmax-sidebar-hover on, moving does this too)
 #   Enter            switch to session and close the sidebar
 #   Space            fold / unfold the group under the cursor
 #   h / Left         same as Space (vim-style)
@@ -36,8 +36,8 @@ if [ -n "${TMAX_DEBUG:-}" ]; then exec 2>>"$TMAX_DEBUG"; set -x; fi
 
 width="$(tmux show-option -gqv "@tmax-sidebar-width")"
 width="${width:-28}"
-hover=1
-[ "$(tmux show-option -gqv "@tmax-sidebar-hover")" = "off" ] && hover=0
+hover=0
+[ "$(tmux show-option -gqv "@tmax-sidebar-hover")" = "on" ] && hover=1
 
 STATE="${TMAX_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tmax}"
 GROUPS_FILE="$STATE/groups"
