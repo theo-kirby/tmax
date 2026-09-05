@@ -77,8 +77,8 @@ time.sleep(0.8); drain()
 state("attached, no sidebar")
 
 send("\x02s", 1.5); state("after prefix+s (open; expect: client on alpha overview, 2 previews)"); show_sidebar(); overview("open in alpha")
-send("j", 0.4); show_sidebar()
-send("\t", 1.5); state("after j + Tab (should be beta, sidebar still focused)"); show_sidebar(); overview("after Tab to beta: alpha overview gone, alpha:0 active again")
+send("j", 1.5); state("after j alone (hover: expect beta, sidebar still focused)"); show_sidebar(); overview("after hover to beta: alpha overview gone, alpha:0 active again")
+send("\t", 1.0); state("after Tab (expect: no change, still beta)")
 send("\x1b", 0.5); state("after Esc (focus on a preview pane, sidebar open)")
 send("\x02s", 0.8); state("prefix+s again (should focus sidebar, not close)")
 send("j", 0.3); send("\r", 1.2); state("j + Enter (should be gamma, sidebar closed)")
@@ -95,7 +95,7 @@ state("after external switch-client to alpha (hook follow; expect: one overview,
 send("\x02s", 0.8); send("n", 0.5); send("delta\r", 1.5); state("after n + 'delta' (should be in delta)"); show_sidebar()
 # kill current (delta)
 send("\x02s", 0.8); send("G", 0.3); show_sidebar()
-send("d", 0.5); send("y\r", 1.5); state("after killing selected session")
+send("d", 0.5); send("y\r", 1.5); state("after killing selected session (G hovered to gamma, so it was current; expect: now in alpha)")
 show_sidebar()
 
 # ---- groups ---------------------------------------------------------------
@@ -108,7 +108,7 @@ def files(label):
 
 # sidebar is still open, client is in delta; sessions: alpha beta delta
 send("g", 0.3); send("t", 0.5); send("work\r", 1.0)
-print("\n== after tagging alpha -> work (expect: beta, ● delta, then '▾ work' / alpha)"); show_sidebar(); files("alpha tagged")
+print("\n== after tagging alpha -> work (expect: beta, delta, then '▾ work' / ● alpha)"); show_sidebar(); files("alpha tagged")
 send("g", 0.3); send("j", 0.3); send("t", 0.5); send("personal\r", 1.0)
 print("\n== after tagging delta -> personal (expect: beta, ▾ personal / ● delta, ▾ work / alpha)"); show_sidebar()
 send("h", 0.8)
@@ -117,7 +117,7 @@ send("G", 0.3); send(" ", 0.8)
 print("\n== after G + Space on alpha (expect: '▸ work 1', alpha hidden)"); show_sidebar()
 send("k", 0.3); send("\t", 0.8)
 print("\n== after k + Tab on personal (expect: personal unfolded, delta visible)"); show_sidebar()
-send("\r", 0.8); state("Enter on group line (expect: personal folded again, sidebar still open, still delta)"); show_sidebar()
+send("\r", 0.8); state("Enter on group line (expect: personal folded again, sidebar still open, still alpha)"); show_sidebar()
 send("n", 0.5); send("eps\r", 1.5); state("n on personal line + 'eps' (expect: in eps, '▸ personal 2', eps hidden)"); show_sidebar(); files("eps created")
 send("\x02s", 0.8); send("r", 0.5); send("home\r", 1.0)   # cursor sits on the personal line
 print("\n== after renaming group personal -> home (expect: '▸ home 2', still folded)"); show_sidebar(); files("group renamed")

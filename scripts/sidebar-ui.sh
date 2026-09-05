@@ -3,7 +3,8 @@
 # Works with the bash 3.2 that ships with macOS.
 #
 # Keys:
-#   j / k / arrows   move
+#   j / k / arrows   move; the session under the cursor is shown right away
+#                    (hover, option @tmax-sidebar-hover, default on)
 #   Tab              switch to session, keep focus in the sidebar
 #   Enter            switch to session and close the sidebar
 #   Space            fold / unfold the group under the cursor
@@ -35,6 +36,8 @@ if [ -n "${TMAX_DEBUG:-}" ]; then exec 2>>"$TMAX_DEBUG"; set -x; fi
 
 width="$(tmux show-option -gqv "@tmax-sidebar-width")"
 width="${width:-28}"
+hover=1
+[ "$(tmux show-option -gqv "@tmax-sidebar-hover")" = "off" ] && hover=0
 
 STATE="${TMAX_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tmax}"
 GROUPS_FILE="$STATE/groups"
@@ -486,17 +489,41 @@ read_escape_rest() {
   stty "$saved"
 }
 
+# Read one key, but give up after 0.1s. Prints the key followed by "x" so a
+# newline survives the command substitution.
+peek_key() {
+  local saved
+  saved="$(stty -g)"
+  stty -icanon -echo min 0 time 1
+  dd bs=1 count=1 2>/dev/null
+  stty "$saved"
+  printf 'x'
+}
+
+# Hover: show the session under the cursor. Called when the keys pause.
+hover_switch() {
+  want_switch=0
+  on_session || return
+  [ "$(row_name)" = "$current" ] && return
+  goto "$(row_name)"
+}
+
 load
 select_session "$current"
 last_snapshot=""
+want_switch=0
 while :; do
   snap="$(snapshot)"
   if [ "$snap" != "$last_snapshot" ]; then render; last_snapshot="$snap"; fi
   key=""
+  if [ "$want_switch" -eq 1 ]; then
+    # The cursor moved. Wait a moment for more keys; when they stop, switch.
+    key="$(peek_key)"; key="${key%x}"
+    if [ -z "$key" ]; then hover_switch; load; continue; fi
   # 1s timeout so the list refreshes and picks up resizes on its own.
   # NOTE: bash 3.2 returns 1 on timeout, bash 4+ returns >128. Treat any
   # failure as a timeout, but stop if the terminal is really gone.
-  if ! IFS= read -rsn1 -t 1 key; then
+  elif ! IFS= read -rsn1 -t 1 key; then
     [ -t 0 ] || exit 0
     load; continue
   fi
@@ -513,18 +540,18 @@ while :; do
         *)    key="esc" ;;
       esac
       ;;
-    "")    key="enter" ;;
+    ""|$'\n'|$'\r') key="enter" ;;
     $'\t') key="tab" ;;
     " ")   key="space" ;;
   esac
   n=${#rtype[@]}
   case "$key" in
-    j)       [ "$n" -gt 0 ] && sel=$(( (sel + 1) % n )) ;;
-    k)       [ "$n" -gt 0 ] && sel=$(( (sel - 1 + n) % n )) ;;
-    g)       sel=0 ;;
-    G)       [ "$n" -gt 0 ] && sel=$((n - 1)) ;;
-    tab)     activate ;;
-    enter)   activate close ;;
+    j)       [ "$n" -gt 0 ] && sel=$(( (sel + 1) % n )); want_switch=$hover ;;
+    k)       [ "$n" -gt 0 ] && sel=$(( (sel - 1 + n) % n )); want_switch=$hover ;;
+    g)       sel=0; want_switch=$hover ;;
+    G)       [ "$n" -gt 0 ] && sel=$((n - 1)); want_switch=$hover ;;
+    tab)     want_switch=0; activate ;;
+    enter)   want_switch=0; activate close ;;
     space|h) fold_here ;;
     J)       move_here 1 ;;
     K)       move_here -1 ;;

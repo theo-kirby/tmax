@@ -55,9 +55,9 @@ Keys inside the sidebar:
 
 | Key           | Action                                             |
 |---------------|----------------------------------------------------|
-| `j` `k` arrows| move                                               |
-| `Tab`         | go to session, keep focus in the sidebar           |
-| `Enter`       | go to session and close the sidebar                |
+| `j` `k` arrows| move; the session under the cursor is shown at once |
+| `Enter`       | close the sidebar, stay on this session            |
+| `Tab`         | show the session now (only needed with hover off)  |
 | `n`           | new session                                        |
 | `r`           | rename session                                     |
 | `d`           | kill session (asks `y`/`N`)                        |
@@ -150,6 +150,7 @@ set -g @tmax-sidebar-key    "s"    # prefix + key
 set -g @tmax-sidebar-width  "28"   # columns
 set -g @tmax-sidebar-follow "on"   # "off" = sidebar stays where it was opened
 set -g @tmax-sidebar-overview "on" # "off" = no overview, sidebar next to your window
+set -g @tmax-sidebar-hover "on"    # "off" = moving the cursor does not switch; use Tab
 ```
 
 ## Files

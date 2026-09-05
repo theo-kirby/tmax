@@ -18,6 +18,7 @@ get_opt() {
 #   set -g @tmax-sidebar-width "28"   # width in columns
 #   set -g @tmax-sidebar-follow "on"  # sidebar moves with you when you change session
 #   set -g @tmax-sidebar-overview "on" # show every window of the session while the sidebar is open
+#   set -g @tmax-sidebar-hover "on"   # moving the cursor shows that session right away
 
 sidebar_key="$(get_opt "@tmax-sidebar-key" "s")"
 # The script cannot ask tmux "which session is this client on?" reliably (a
