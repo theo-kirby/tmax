@@ -74,6 +74,41 @@ group.
 The sidebar follows you. If you change session another way (for example
 `prefix + (`), the sidebar moves to the new session too.
 
+### Overview
+
+While the sidebar is open, the right side does not show one window. It shows
+every window of the session, tiled, like an overview. Each tile has a title
+line (`1: logs *`, the `*` marks the current window) and the live text of that
+window, refreshed once a second.
+
+```
++-----------+-----------------+-----------------+
+| ● work    | 0: editor *     | 1: logs         |
+|   notes   | vim main.go     | [12:01] ready   |
+|   scratch |                 |                 |
+|           +-----------------+-----------------+
+|           | 2: shell        |                 |
+|           | $ make test     |                 |
++-----------+-----------------+-----------------+
+```
+
+Keys inside a tile:
+
+| Key            | Action                                   |
+|----------------|------------------------------------------|
+| `j` `k` `h` `l` arrows | move between tiles               |
+| `Enter`        | go to that window and leave sidebar mode |
+| `s`            | focus the sidebar                        |
+| `Esc` or `q`   | leave sidebar mode                       |
+
+Leaving sidebar mode puts the session back on the window it was on. `Esc` in
+the sidebar focuses the first tile. Tab to another session in the sidebar
+builds its overview and drops the old one.
+
+The overview is a real tmux window named `overview`. It shows up in the status
+bar while sidebar mode is on and goes away when you leave. Set
+`@tmax-sidebar-overview` to `off` to get a plain sidebar next to your window.
+
 The stock tmux session tree is still there on `prefix + S`.
 
 ### Groups
@@ -114,14 +149,16 @@ Put these in `~/.tmux.conf` **before** the `run-shell` line:
 set -g @tmax-sidebar-key    "s"    # prefix + key
 set -g @tmax-sidebar-width  "28"   # columns
 set -g @tmax-sidebar-follow "on"   # "off" = sidebar stays where it was opened
+set -g @tmax-sidebar-overview "on" # "off" = no overview, sidebar next to your window
 ```
 
 ## Files
 
 ```
 tmax.tmux              entry point: key bindings and hooks
-scripts/sidebar.sh     open / close / focus / move the sidebar pane
+scripts/sidebar.sh     open / close / focus / move the sidebar pane; builds the overview
 scripts/sidebar-ui.sh  the list that runs inside the sidebar pane
+scripts/preview.sh     one tile of the overview
 ```
 
 ## Debug

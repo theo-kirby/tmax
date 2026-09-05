@@ -8,18 +8,24 @@ import os, pty, time, subprocess, sys, fcntl, termios, struct, select, tempfile,
 SOCK = "tmaxtest"
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = tempfile.mkdtemp(prefix="tmaxtest-state-")
-def t(*args, check=True):
+def t(*args, check=True, raw=False):
     r = subprocess.run(["tmux", "-L", SOCK, *args], capture_output=True, text=True)
     if check and r.returncode != 0:
         print("tmux err:", args, r.stderr.strip())
-    return r.stdout.strip()
+    # raw keeps leading spaces of the first line (needed for screen captures)
+    return r.stdout.rstrip("\n") if raw else r.stdout.strip()
 
 subprocess.run(["tmux", "-L", SOCK, "kill-server"], capture_output=True)
 t("-f", "/dev/null", "new-session", "-d", "-s", "alpha", "-x", "120", "-y", "40")
 t("new-session", "-d", "-s", "beta", "-x", "120", "-y", "40")
 t("new-session", "-d", "-s", "gamma", "-x", "120", "-y", "40")
+# alpha gets a second window with known text, so previews have something to show
+t("send-keys", "-t", "alpha:0", "echo hello-from-alpha-zero", "Enter")
+t("new-window", "-d", "-t", "alpha:", "-n", "logs", "echo hello-from-logs; sleep 300")
+t("select-window", "-t", "alpha:0")
 # groups / fold state go to a throwaway dir, not ~/.local/state/tmax
 t("set-environment", "-g", "TMAX_STATE_DIR", STATE)
+if os.environ.get("TMAX_TEST_DEBUG"): t("set-environment", "-g", "TMAX_DEBUG", os.environ["TMAX_TEST_DEBUG"])
 t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
 print("bind s ->", t("list-keys", "-T", "prefix", "s"))
 print("hook   ->", t("show-hooks", "-g"))
@@ -48,27 +54,43 @@ def state(label):
     for l in t("list-panes", "-a", "-F", "  #{session_name}:#{window_index} #{pane_id} w=#{pane_width} active=#{pane_active} cmd=#{pane_current_command}").splitlines():
         print(l)
 
+def overview(label):
+    print(f" --- overviews ({label}) ---")
+    for l in t("list-windows", "-a", "-F", "  #{session_name}:#{window_index} #{window_id} name=#{window_name} ovw=[#{@tmax-overview}] active=#{window_active} panes=#{window_panes}").splitlines():
+        print(l)
+    side = t("show-option", "-gqv", "@tmax-sidebar-pane")
+    for l in t("list-panes", "-a", "-F", "#{pane_id} #{window_name} #{pane_width}x#{pane_height}").splitlines():
+        pid, wname, size = l.split(" ")
+        if wname == "overview" and pid != side:
+            print(f"  preview {pid} {size}:")
+            for line in t("capture-pane", "-p", "-t", pid, raw=True).splitlines()[:3]:
+                if line.strip(): print("   |" + line)
+
 def show_sidebar():
     p = t("show-option", "-gqv", "@tmax-sidebar-pane")
     if p:
         print(" --- sidebar screen ---")
-        for l in t("capture-pane", "-p", "-t", p).splitlines():
+        for l in t("capture-pane", "-p", "-t", p, raw=True).splitlines():
             if l.strip(): print("  |" + l)
 
 time.sleep(0.8); drain()
 state("attached, no sidebar")
 
-send("\x02s", 1.2); state("after prefix+s (open)"); show_sidebar()
+send("\x02s", 1.5); state("after prefix+s (open; expect: client on alpha overview, 2 previews)"); show_sidebar(); overview("open in alpha")
 send("j", 0.4); show_sidebar()
-send("\t", 1.2); state("after j + Tab (should be beta, sidebar still focused)"); show_sidebar()
-send("\x1b", 0.5); state("after Esc (focus on work pane, sidebar open)")
+send("\t", 1.5); state("after j + Tab (should be beta, sidebar still focused)"); show_sidebar(); overview("after Tab to beta: alpha overview gone, alpha:0 active again")
+send("\x1b", 0.5); state("after Esc (focus on a preview pane, sidebar open)")
 send("\x02s", 0.8); state("prefix+s again (should focus sidebar, not close)")
 send("j", 0.3); send("\r", 1.2); state("j + Enter (should be gamma, sidebar closed)")
-send("\x02s", 1.2); state("prefix+s (reopen in gamma)")
+send("\x02s", 1.2); state("prefix+s (reopen in gamma)"); overview("reopen in gamma")
+# pick a window from inside a preview pane
+send("\x1b", 0.5)   # esc -> focus preview pane
+send("\r", 1.2); state("Enter in preview (expect: sidebar closed, no overview, gamma:0 active)"); overview("after pick")
 # external session switch -> hook should move the sidebar
-send("\x1b", 0.5)   # esc -> focus work pane
-t("switch-client", "-t", "alpha"); time.sleep(1.0)
-state("after external switch-client to alpha (hook follow)")
+send("\x02s", 1.2)
+send("\x1b", 0.5)   # esc -> focus preview pane
+t("switch-client", "-t", "alpha"); time.sleep(1.5)
+state("after external switch-client to alpha (hook follow; expect: one overview, in alpha)"); overview("after external switch")
 # new session
 send("\x02s", 0.8); send("n", 0.5); send("delta\r", 1.5); state("after n + 'delta' (should be in delta)"); show_sidebar()
 # kill current (delta)
@@ -111,7 +133,7 @@ send("G", 0.3); send(" ", 0.8); send("G", 0.3); send("K", 0.8)
 print("\n== after unfolding home, G, K (expect: eps above delta, cursor on eps)"); show_sidebar(); files("eps moved up")
 
 # close with q
-send("q", 1.0); state("after q (sidebar closed)")
+send("q", 1.0); state("after q (sidebar closed)"); overview("after q: none left")
 print("\nsessions:", t("list-sessions", "-F", "#{session_name}"))
 subprocess.run(["tmux", "-L", SOCK, "kill-server"], capture_output=True)
 shutil.rmtree(STATE, ignore_errors=True)

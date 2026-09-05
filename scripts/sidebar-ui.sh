@@ -26,6 +26,7 @@
 #   collapsed   one group name per line
 
 set -u
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OPT="@tmax-sidebar-pane"
 ME="$TMUX_PANE"
 
@@ -50,10 +51,13 @@ else
 fi
 
 cleanup() {
+  trap '' TERM INT HUP
   tput cnorm 2>/dev/null
   tput rmcup 2>/dev/null
   # Only forget the option if it still points at us.
   [ "$(tmux show-option -gqv "$OPT")" = "$ME" ] && tmux set-option -gu "$OPT"
+  # Overview windows go away with the sidebar. This may kill our own window.
+  "$DIR/sidebar.sh" prune
 }
 trap cleanup EXIT
 trap 'exit 0' TERM INT HUP
@@ -188,6 +192,14 @@ load() {
   done < <(tmux list-sessions -F '#{session_name}	#{session_windows}w#{?session_attached, *,}' 2>/dev/null | sort -f)
   nsessions=${#anames[@]}
   current="$(tmux display-message -p -t "$ME" '#{session_name}')"
+  # The overview window (sidebar mode) is ours, do not count it.
+  if [ "$(tmux list-windows -t "$current" -F '#{@tmax-overview}' 2>/dev/null | grep -c 1)" -gt 0 ]; then
+    for i in "${!anames[@]}"; do
+      if [ "${anames[$i]}" = "$current" ]; then
+        ainfos[$i]="$(( ${ainfos[$i]%%w*} - 1 ))w${ainfos[$i]#*w}"
+      fi
+    done
+  fi
 
   # 2. put them in display order: the order of the groups file first, then the rest
   read_groups_file
@@ -326,7 +338,7 @@ goto() {
   [ -z "$target" ] && return
   if [ "$target" != "$current" ]; then
     tmux switch-client -t "$target" || { status="switch failed"; return; }
-    tmux join-pane -fhb -l "$width" -d -s "$ME" -t "${target}:" 2>/dev/null
+    "$DIR/sidebar.sh" follow "$target"
   fi
   case "$after" in
     work)  focus_work_pane ;;
