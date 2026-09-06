@@ -27,6 +27,44 @@ that later: TPM runs every `*.tmux` file in a plugin folder.)
 - Key bindings point to helper scripts in `scripts/`.
 - State is kept in tmux user options. They start with `@`.
 
+## Session switcher
+
+`prefix + Space` opens a small popup with an [fzf](https://github.com/junegunn/fzf)
+list of every session, local and remote, like
+[tmux-fzf](https://github.com/sainnhe/tmux-fzf). It works with the sidebar on
+or off.
+
+```
++--------------------------------------------+
+| session> ou                          1/11  |
+| > mmini/ouro   2 windows                   |
+|                                            |
++--------------------------------------------+
+```
+
+Type to filter on the name, `Enter` switches, `Esc` cancels. If nothing
+matches, `Enter` creates a local session named after what you typed and
+switches to it. Remote sessions are named `host/session` and connect when
+selected.
+
+The list shows what tmux already knows right away, then the configured hosts
+are refreshed in the background and the list updates in place. Hosts that are
+offline just keep their cached entries.
+
+`fzf` 0.36 or newer must be installed (`brew install fzf`). Without it the key
+shows a short message in the status line. tmux 3.2+ is needed for popups.
+
+This replaces tmux's default `prefix + Space` (`next-layout`); that command
+is still available from the `:` prompt or by binding another key.
+
+Options, in `~/.tmux.conf` before the `run-shell` line:
+
+```tmux
+set -g @tmax-switch-key    "Space"  # prefix + key
+set -g @tmax-switch-width  "60%"    # popup size, columns or percent
+set -g @tmax-switch-height "50%"
+```
+
 ## Session sidebar
 
 The sidebar is optional. For the native tmux session tree plus remote access,
@@ -256,6 +294,7 @@ set -g @tmax-sidebar-hover "off"   # "on" = moving the cursor switches at once, 
 
 ```
 tmax.tmux              entry point: key bindings and hooks
+scripts/remote.py      remote hosts over SSH control mode; the fzf session switcher
 scripts/sidebar.sh     open / close / focus / move the sidebar pane; builds the overview
 scripts/sidebar-ui.sh  the list that runs inside the sidebar pane
 scripts/preview.sh     one tile of the overview
@@ -283,6 +322,13 @@ python3 test/sidebar_test.py
 
 Starts a throwaway tmux server, drives the sidebar with fake key presses, and
 prints the state after each step. Your real tmux server is not touched.
+
+```sh
+python3 test/switch_test.py
+```
+
+Opens the `prefix + Space` popup on a throwaway server, types into fzf, and
+checks that the client lands on the chosen or newly created session.
 
 The remote integration suite creates and removes its own tmux servers on
 both ends, using an existing SSH connection or configured key:

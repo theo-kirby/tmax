@@ -51,5 +51,16 @@ if [ "$(get_opt "@tmax-sidebar-follow" "on")" = "on" ]; then
 fi
 fi
 
+# --- Session switcher -------------------------------------------------------
+# prefix + Space opens an fzf popup listing local and remote sessions.
+#   set -g @tmax-switch-key    "Space"
+#   set -g @tmax-switch-width  "60%"
+#   set -g @tmax-switch-height "50%"
+# display-popup does not expand formats in its command (tmux 3.4), so run-shell
+# fills in the client name and opens the popup on that client.
+switch_key="$(get_opt "@tmax-switch-key" "Space")"
+switch_size="-w '$(get_opt "@tmax-switch-width" "60%")' -h '$(get_opt "@tmax-switch-height" "50%")'"
+tmux bind-key "$switch_key" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' sessions ' $switch_size \"python3 '$CURRENT_DIR/scripts/remote.py' switch '#{q:client_name}'\""
+
 # Keep recognized local bindings intact; route their remote branch via control mode.
 python3 "$CURRENT_DIR/scripts/remote.py" install

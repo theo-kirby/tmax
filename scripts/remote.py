@@ -216,9 +216,9 @@ def activate(session):
             local("display-message", "tmax: " + clean(str(exc)), check=False)
 
 
-def tree(client, pane):
+def discover():
+    """Refresh every configured host and register a placeholder for each remote session. Returns error strings."""
     from concurrent.futures import ThreadPoolExecutor
-    local("display-message", "-c", client, "Refreshing sessions…", check=False)
     configured = hosts()
     with ThreadPoolExecutor(max_workers=max(1, min(4, len(configured)))) as pool:
         list(pool.map(refresh, configured))
@@ -244,6 +244,12 @@ def tree(client, pane):
             name, owner, sid = line.split("\t")
             if owner == host and sid not in current_ids:
                 forget_proxy(name)
+    return errors
+
+
+def tree(client, pane):
+    local("display-message", "-c", client, "Refreshing sessions…", check=False)
+    errors = discover()
     # Do not open a chooser over unrelated work if its invoking client moved meanwhile.
     clients = dict(line.split("\t", 1) for line in local("list-clients", "-F", "#{client_name}\t#{session_id}", check=False).splitlines())
     current = local("display-message", "-p", "-t", clients[client], "#{pane_id}", check=False) if client in clients else None
@@ -254,6 +260,61 @@ def tree(client, pane):
               "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}} windows#{?session_attached, (attached),}}}")
     if errors:
         local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
+
+
+def switch_rows(refresh_hosts=False):
+    """Lines for the fzf switcher: ID, name, padded name, details (tab-separated); local sessions first, then host/name.
+
+    fzf matches only the name (--nth counts fields after --with-nth has picked the shown ones)."""
+    errors = discover() if refresh_hosts else []
+    entries = []
+    for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t"
+                      "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}}\t#{session_attached}", check=False).splitlines():
+        sid, name, host, count, attached = line.split("\t", 4)
+        detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (attached)" if attached != "0" else "")
+        entries.append((host != "", host.lower(), name.lower(), sid, name, detail))
+    entries.sort()
+    width = max((len(entry[4]) for entry in entries), default=0)
+    lines = [sid + "\t" + name + "\t" + name.ljust(width) + " \t" + detail for _, _, _, sid, name, detail in entries]
+    return lines, errors
+
+
+def switch_list(*flags):
+    lines, _ = switch_rows("--refresh" in flags)
+    print("\n".join(lines))
+
+
+def switch(client):
+    """fzf popup that switches the client to the chosen session, or creates one when nothing matches."""
+    import shutil
+    fzf = shutil.which("fzf") or next((p for p in ["/opt/homebrew/bin/fzf", "/usr/local/bin/fzf"] if os.path.exists(p)), None)
+    if not fzf:
+        local("display-message", "-c", client, "tmax: fzf not found (brew install fzf)", check=False)
+        return
+    lines, _ = switch_rows()
+    # Show what is known right away; the refreshed host list replaces it when discovery finishes.
+    reload = shlex.join(SELF + ["switch-list", "--refresh"])
+    result = subprocess.run([fzf, "--reverse", "--no-multi", "--cycle", "--info=inline", "--print-query",
+                             "--prompt", "session> ", "--delimiter", "\t", "--with-nth", "3,4", "--nth", "1", "--tabstop", "1",
+                             "--bind", "start:reload-sync(" + reload + ")"],
+                            input="\n".join(lines) + "\n", capture_output=True, text=True)
+    output = result.stdout.splitlines()
+    query = output[0].strip() if output else ""
+    if result.returncode == 0 and len(output) > 1:
+        sid, name = output[1].split("\t", 2)[:2]
+    elif result.returncode == 1 and query:
+        try:
+            sid = local("new-session", "-d", "-s", query, "-P", "-F", "#{session_id}")
+        except RuntimeError as exc:
+            local("display-message", "-c", client, "tmax: " + clean(str(exc)), check=False)
+            return
+        name = query
+    else:
+        return
+    local("switch-client", "-c", client, "-t", sid, check=False)
+    # With the sidebar off, the client-session-changed hook connects remote sessions; otherwise do it here.
+    if local("show-options", "-gqv", "@tmax-sidebar", check=False) != "off":
+        activate(name)
 
 
 def layout_translate(layout, mapping):
@@ -657,7 +718,7 @@ def forget_proxy(name):
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate"])
+    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":
@@ -666,7 +727,7 @@ def main():
         except Exception as exc:
             local("display-message", "tmax: " + str(exc), check=False)
     else:
-        globals()[args.command](*args.args)
+        globals()[args.command.replace("-", "_")](*args.args)
 
 
 if __name__ == "__main__":
