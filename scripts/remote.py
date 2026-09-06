@@ -262,21 +262,38 @@ def tree(client, pane):
         local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
 
 
-def switch_rows(refresh_hosts=False):
-    """Lines for the fzf switcher: ID, name, padded name, details (tab-separated); local sessions first, then host/name.
+# Pill backgrounds (256-colour indexes): local sessions, then remote hosts in remotes.json order.
+LOCAL_PILL = "240"
+HOST_PILLS = ["25", "89", "30", "130", "61", "94"]
 
-    fzf matches only the name (--nth counts fields after --with-nth has picked the shown ones) and
-    tracks the cursor by ID across reloads."""
+
+def pill(text, background):
+    return "\x1b[48;5;" + background + "m\x1b[38;5;255m " + text + " \x1b[0m"
+
+
+def switch_rows(refresh_hosts=False):
+    """Lines for the fzf switcher: ID, local name, padded shown name, padded window count, host pill (tab-separated).
+
+    Local sessions come first, then remote ones in remotes.json order. fzf shows the last three fields and
+    matches only the name (--nth counts fields after --with-nth has picked the shown ones); it tracks the
+    cursor by ID across reloads."""
     errors = discover() if refresh_hosts else []
+    order = {host: index for index, host in enumerate(hosts())}
     entries = []
-    for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t"
+    for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t#{@tmax-remote-name}\t"
                       "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}}\t#{session_attached}", check=False).splitlines():
-        sid, name, host, count, attached = line.split("\t", 4)
+        sid, name, host, title, count, attached = line.split("\t", 5)
+        shown = name
+        if host:
+            shown = title or (name[len(host) + 1:] if name.startswith(host + "/") else name)
         detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (attached)" if attached != "0" else "")
-        entries.append((host != "", host.lower(), name.lower(), sid, name, detail))
+        badge = pill(host, HOST_PILLS[order.get(host, len(HOST_PILLS) - 1) % len(HOST_PILLS)]) if host else pill("local", LOCAL_PILL)
+        entries.append((host != "", order.get(host, len(order)), host.lower(), shown.lower(), sid, name, shown, detail, badge))
     entries.sort()
-    width = max((len(entry[4]) for entry in entries), default=0)
-    lines = [sid + "\t" + name + "\t" + name.ljust(width) + " \t" + detail for _, _, _, sid, name, detail in entries]
+    name_width = max((len(entry[6]) for entry in entries), default=0)
+    detail_width = max((len(entry[7]) for entry in entries), default=0)
+    lines = [sid + "\t" + name + "\t" + shown.ljust(name_width) + " \t" + detail.ljust(detail_width) + " \t" + badge
+             for _, _, _, _, sid, name, shown, detail, badge in entries]
     return lines, errors
 
 
@@ -362,13 +379,12 @@ def switch(client):
     binds += [key + ":" + (to_insert if action == "enter-insert" else action) for key, action in SWITCH_NORMAL_KEYS.items()]
     binds.append("esc:transform:[ \"$FZF_PROMPT\" = \"insert> \" ] && echo " + shlex.quote(to_normal) + " || echo abort")
     binds.append("load:bg-transform(" + refresh_cmd + ")+unbind(load)")
-    command = [fzf, "--reverse", "--no-multi", "--cycle", "--info=inline", "--print-query", "--prompt", "normal> ",
-               "--delimiter", "\t", "--with-nth", "3,4", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1"]
+    command = [fzf, "--ansi", "--reverse", "--no-multi", "--cycle", "--info=inline", "--print-query", "--prompt", "normal> ",
+               "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1"]
     for bind in binds:
         command += ["--bind", bind]
-    colors = switch_colors()
-    if colors:
-        command += ["--color", ",".join(colors)]
+    # No gutter bar: fzf would otherwise draw a bar in every row's first column in the highlight colour.
+    command += ["--gutter", " ", "--color", ",".join(["gutter:-1"] + switch_colors())]
     try:
         result = subprocess.run(command, input="\n".join(lines) + "\n", capture_output=True, text=True,
                                 env=dict(os.environ, SHELL="/bin/sh"))

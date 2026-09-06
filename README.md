@@ -35,13 +35,19 @@ list of every session, local and remote, like
 or off.
 
 ```
-+--------------------------------------------+
++---- sessions ------------------------------+
 | normal>                             11/11  |
-| > lab          2 windows (attached)        |
-|   tmax         2 windows                   |
-|   mmini/ouro   2 windows                   |
+|▌ lab     2 windows (attached)   [local]    |
+|  tmax    2 windows              [local]    |
+|  ouro    2 windows              [mmini]    |
+|  0       2 windows              [sb1x]     |
 +--------------------------------------------+
 ```
+
+Each row is the session name, its window count, and a pill naming the
+computer: `local`, or the host key from `remotes.json`. Local sessions come
+first, then each host in the order of `remotes.json`; every host has its own
+pill colour.
 
 The popup starts in a vim-like normal mode. Letters do nothing there except
 the keys below, so `j` and `k` move without typing into the filter. Press
@@ -60,11 +66,12 @@ normal mode with the filter kept.
 | insert | `Enter`         | go to the session; with no match, create a local session named after the text |
 | insert | `Esc`           | back to normal mode                          |
 
-Remote sessions are named `host/session` and connect when selected.
+Remote sessions connect when selected. (Their local proxies are still named
+`host/session` in the native tmux tree.)
 
 The popup border and the highlighted line use the colours of your status
-bar (`status-style`). A status bar without a background colour leaves the
-border in the default colour.
+bar (`status-style`); the title is white. A status bar without a background
+colour leaves the border in the default colour.
 
 The list appears at once with what tmux already knows (local sessions and
 the remote ones seen before). The configured hosts are then refreshed in the

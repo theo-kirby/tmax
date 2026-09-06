@@ -38,6 +38,7 @@ t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
 binding = t("list-keys", "-T", "prefix", "Space")
 expect("Space opens a popup", "display-popup" in binding and "switch" in binding, True)
 expect("popup border follows status-style", "-S 'fg=#{?#{m/r:bg=,#{status-style}}" in binding, True)
+expect("popup title is white", "-T '#[fg=white] sessions '" in binding, True)
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 import remote
 expect("fzf colour names", [remote.fzf_color(c) for c in ["green", "colour235", "color7", "brightred", "#ff8800", "default"]],
@@ -48,7 +49,8 @@ env = dict(os.environ, TMUX=t("display-message", "-p", "#{socket_path}") + ",0,0
 rows = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
                       capture_output=True, text=True, env=env).stdout.splitlines()
 expect("switch-list names", [r.split("\t")[1] for r in rows], ["alpha", "beta", "gamma"])
-expect("switch-list beta label", rows[1].split("\t")[2:], ["beta  ", "2 windows"])
+fields = rows[1].split("\t")
+expect("switch-list beta label", [fields[2].strip(), fields[3].strip(), "local" in fields[4] and "\x1b[" in fields[4]], ["beta", "2 windows", True])
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -103,16 +105,16 @@ expect("no match + Enter creates delta", session(), "delta")
 expect("delta exists", "delta" in t("list-sessions", "-F", "#{session_name}").split(), True)
 
 send("\x02 ", 1.5)
-send("i", 0.4); send("a", 0.6); send("\x1b", 0.8); send("j", 0.4); send("\r", 1.5)
-expect("insert a, Esc back to normal, j Enter -> second a-match (gamma)", session(), "gamma")
+send("i", 0.4); send("delt", 0.8); send("\x1b", 0.8); send("j", 0.4); send("\r", 1.5)
+expect("insert delt, Esc keeps the filter, j Enter in normal mode -> delta", session(), "delta")
 
 send("\x02 ", 1.5)
 send("\x1b", 1.5)               # Esc in normal mode cancels
-expect("Esc keeps the session", session(), "gamma")
+expect("Esc keeps the session", session(), "delta")
 
 send("\x02 ", 1.5)
 send("q", 1.5)
-expect("q keeps the session", session(), "gamma")
+expect("q keeps the session", session(), "delta")
 
 send("\x02 ", 1.5)
 send("i", 0.4); send("alp", 1.0); send("\r", 1.5)
