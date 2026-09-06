@@ -272,37 +272,35 @@ def tree(client, pane):
         local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
 
 
-# Pill colours: terminal colours, local first, then remote hosts in remotes.json order. Green is last
-# because it is usually the status bar (and therefore highlight) colour. A "colour" per entry overrides.
-PILL_COLOURS = ["blue", "cyan", "magenta", "green"]
+# Host name colours: terminal colours, local first, then remote hosts in remotes.json order. A "colour" per entry overrides.
+HOST_COLOURS = ["blue", "cyan", "magenta", "yellow"]
 ANSI = {"black": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "white": 7}
-DARK_BACKGROUNDS = {"blue", "magenta", "red", "black"}
 
 
-def pill(text, colour):
-    """Text on a coloured background; colour is a tmux-style name, colourN, or #rrggbb."""
+def tint(text, colour):
+    """Text in a foreground colour; colour is a tmux-style name, colourN, or #rrggbb."""
     name = colour.lower()
     match = re.fullmatch(r"colou?r(\d+)|(\d+)", name)
     if match:
-        background, foreground = "48;5;" + (match.group(1) or match.group(2)), "30"
+        code = "38;5;" + (match.group(1) or match.group(2))
     elif re.fullmatch(r"#[0-9a-f]{6}", name):
-        background, foreground = "48;2;" + ";".join(str(int(name[i:i + 2], 16)) for i in (1, 3, 5)), "30"
+        code = "38;2;" + ";".join(str(int(name[i:i + 2], 16)) for i in (1, 3, 5))
     elif name.startswith("bright") and name[6:] in ANSI:
-        background, foreground = str(100 + ANSI[name[6:]]), "30"
+        code = str(90 + ANSI[name[6:]])
     elif name in ANSI:
-        background, foreground = str(40 + ANSI[name]), "37" if name in DARK_BACKGROUNDS else "30"
+        code = str(30 + ANSI[name])
     else:
-        background, foreground = "7", "39"
-    return "\x1b[" + background + "m\x1b[" + foreground + "m " + text + " \x1b[0m"
+        code = "39"
+    return "\x1b[" + code + "m" + text + "\x1b[0m"
 
 
-def pill_colour(host, position):
+def host_colour(host, position):
     """The entry's own "colour", else the palette colour for its position (0 = local)."""
-    return config().get(host, {}).get("colour") or PILL_COLOURS[position % len(PILL_COLOURS)]
+    return config().get(host, {}).get("colour") or HOST_COLOURS[position % len(HOST_COLOURS)]
 
 
 def switch_rows(refresh_hosts=False):
-    """Lines for the fzf switcher: ID, local name, padded shown name, padded window count, host pill (tab-separated).
+    """Lines for the fzf switcher: ID, local name, padded shown name, padded window count, coloured host name (tab-separated).
 
     Local sessions come first, then remote ones in remotes.json order. fzf shows the last three fields and
     matches only the name (--nth counts fields after --with-nth has picked the shown ones); it tracks the
@@ -317,7 +315,7 @@ def switch_rows(refresh_hosts=False):
         if host:
             shown = title or (name[len(host) + 1:] if name.startswith(host + "/") else name)
         detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (attached)" if attached != "0" else "")
-        badge = pill(label(host), pill_colour(host, 1 + order.get(host, len(order)))) if host else pill(label("local"), pill_colour("local", 0))
+        badge = tint(label(host), host_colour(host, 1 + order.get(host, len(order)))) if host else tint(label("local"), host_colour("local", 0))
         entries.append((host != "", order.get(host, len(order)), host.lower(), shown.lower(), sid, name, shown, detail, badge))
     entries.sort()
     name_width = max((len(entry[6]) for entry in entries), default=0)
@@ -368,14 +366,13 @@ def fzf_color(value):
 
 
 def switch_colors():
-    """fzf --color entries that paint the current line like the tmux status bar."""
+    """fzf --color entries that paint the current line like the tmux status bar, in one colour."""
     style = dict(part.split("=", 1) for part in local("display-message", "-p", "#{status-style}", check=False).split(",") if "=" in part)
     bg, fg = fzf_color(style.get("bg", "")), fzf_color(style.get("fg", ""))
-    colors = []
+    # "strip" drops the items' own ANSI colours on the current line, so the host name turns plain there.
+    colors = ["fg+:" + (fg or "-1") + ":strip"]
     if bg:
         colors += ["bg+:" + bg, "hl:" + bg, "pointer:" + bg, "prompt:" + bg, "hl+:" + (fg or "-1") + ":underline"]
-    if fg:
-        colors.append("fg+:" + fg)
     return colors
 
 

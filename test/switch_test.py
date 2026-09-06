@@ -42,8 +42,8 @@ expect("popup title is white", "-T '#[fg=white] sessions '" in binding, True)
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 os.environ["TMAX_REMOTES_FILE"] = config   # read when the module loads
 import remote
-expect("pill colours", [remote.pill("x", c).split("m")[0] for c in ["blue", "green", "brightred", "colour201", "#ff8800", "12"]],
-       ["\x1b[44", "\x1b[42", "\x1b[101", "\x1b[48;5;201", "\x1b[48;2;255;136;0", "\x1b[48;5;12"])
+expect("host name colours", [remote.tint("x", c).split("m")[0] for c in ["blue", "yellow", "brightred", "colour201", "#ff8800", "12"]],
+       ["\x1b[34", "\x1b[33", "\x1b[91", "\x1b[38;5;201", "\x1b[38;2;255;136;0", "\x1b[38;5;12"])
 expect("labels: host entries and the local entry", [list(remote.hosts()), remote.label("local"), remote.label("srv"), remote.label("other")],
        [["srv"], "this box", "big server", "other"])
 expect("fzf colour names", [remote.fzf_color(c) for c in ["green", "colour235", "color7", "brightred", "#ff8800", "default"]],
