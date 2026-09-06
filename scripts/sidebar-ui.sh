@@ -175,24 +175,26 @@ toggle_fold() { if is_folded "$1"; then unfold "$1"; else fold "$1"; fi; }
 #   S  a session          rname = session name,  rinfo = "2w *", rgroup = its group
 #   G  an open group      rname = group name,    rinfo = ""
 #   F  a folded group     rname = group name,    rinfo = session count
-rtype=(); rname=(); rinfo=(); rgroup=()
+rtype=(); rname=(); rinfo=(); rgroup=(); rtarget=()
 sel=0
 current=""        # session the sidebar currently lives in
 current_group=""  # its group
 status=""         # one-line message shown at bottom
 nsessions=0
 
-add_row() { rtype+=("$1"); rname+=("$2"); rinfo+=("$3"); rgroup+=("$4"); }
+add_row() { rtype+=("$1"); rname+=("$2"); rinfo+=("$3"); rgroup+=("$4"); rtarget+=("${5:-$2}"); }
 
 load() {
   local line i j group count
+  local selected_identity=""
+  [ "${#rtype[@]}" -gt 0 ] && selected_identity="${rtype[$sel]}|${rgroup[$sel]}|${rtarget[$sel]}"
   local anames=() ainfos=() placed=()
   local snames=() sinfos=() sgroups=() inuse=() glist=()
 
   # 1. live sessions, alphabetical
   while IFS= read -r line; do
     anames+=("${line%%	*}"); ainfos+=("${line#*	}")
-  done < <(tmux list-sessions -F '#{session_name}	#{session_windows}w#{?session_attached, *,}' 2>/dev/null | sort -f)
+  done < <(tmux list-sessions -F '#{?@tmax-remote-host,,#{session_name}	#{session_windows}w#{?session_attached, *,}}' 2>/dev/null | sed '/^$/d' | sort -f)
   nsessions=${#anames[@]}
   current="$(tmux display-message -p -t "$ME" '#{session_name}')"
   # The overview window (sidebar mode) is ours, do not count it.
@@ -239,10 +241,15 @@ load() {
   done
 
   # 4. rows: ungrouped sessions first (flat), then one block per group
-  rtype=(); rname=(); rinfo=(); rgroup=()
+  rtype=(); rname=(); rinfo=(); rgroup=(); rtarget=()
+  if is_folded 'host:local'; then
+    add_row h local "$nsessions" 'host:local'
+  else
+    add_row H local "" 'host:local'
   for i in ${snames[@]+"${!snames[@]}"}; do
     [ -z "${sgroups[$i]}" ] && add_row S "${snames[$i]}" "${sinfos[$i]}" ""
   done
+
   for group in ${glist[@]+"${glist[@]}"}; do
     if is_folded "$group"; then
       count=0
@@ -258,6 +265,22 @@ load() {
     fi
   done
 
+  fi
+  local remote_type remote_name remote_info remote_id remote_host="" remote_folded=0
+  while IFS=$'\t' read -r remote_type remote_name remote_info remote_id; do
+    if [ "$remote_type" = H ]; then
+      remote_host="$remote_name"; remote_folded=0
+      if is_folded "host:$remote_host"; then remote_folded=1; remote_type=h; fi
+      add_row "$remote_type" "$remote_host" "$remote_info" "host:$remote_host"
+    elif [ "$remote_type" = R ] && [ "$remote_folded" -eq 0 ]; then
+      add_row R "$remote_name" "$remote_info" "host:$remote_host" "$remote_id"
+    fi
+  done < <(python3 "$DIR/remote.py" rows)
+
+  for i in ${rtype[@]+"${!rtype[@]}"}; do
+    if [ "${rtype[$i]}|${rgroup[$i]}|${rtarget[$i]}" = "$selected_identity" ]; then sel=$i; break; fi
+  done
+
   local n=${#rtype[@]}
   [ "$n" -eq 0 ] && sel=0
   [ "$sel" -ge "$n" ] && [ "$n" -gt 0 ] && sel=$((n - 1))
@@ -269,6 +292,10 @@ select_session() {
   local i
   for i in ${rtype[@]+"${!rtype[@]}"}; do
     [ "${rtype[$i]}" = "S" ] && [ "${rname[$i]}" = "$1" ] && { sel=$i; return; }
+    if [ "${rtype[$i]}" = R ]; then
+      local remote_host="${rgroup[$i]#host:}" remote_sid="${rtarget[$i]#\$}"
+      [ "tmax-$remote_host-$remote_sid" = "$1" ] && { sel=$i; return; }
+    fi
   done
   select_group "$(lookup_group "$1")"
 }
@@ -286,26 +313,35 @@ render() {
   local cols rows i type name info group mark indent line pad
   read -r rows cols < <(stty size 2>/dev/null || echo "24 $width")
   local el; el="$(tput el)"
+  local first=0
+  [ "$sel" -ge "$((rows - 1))" ] && first=$((sel - rows + 2))
   tput home
   for i in ${rtype[@]+"${!rtype[@]}"}; do
+    [ "$i" -lt "$first" ] && continue
+    [ "$i" -ge "$((first + rows - 1))" ] && break
     type="${rtype[$i]}"; name="${rname[$i]}"; info="${rinfo[$i]}"; group="${rgroup[$i]}"
     case "$type" in
       S) if [ "$name" = "$current" ]; then mark="●"; else mark=" "; fi
-         if [ -n "$group" ]; then indent="   "; else indent=" "; fi ;;
-      G) mark="▾"; indent=" " ;;
-      F) mark="▸"; indent=" " ;;
+         if [ -n "$group" ]; then indent="     "; else indent="   "; fi ;;
+      R) mark=" "; indent="   "
+         [ "tmax-${group#host:}-${rtarget[$i]#\$}" = "$current" ] && mark="●" ;;
+      G) mark="▾"; indent="   " ;;
+      F) mark="▸"; indent="   " ;;
+      H) mark="▾"; indent=" " ;;
+      h) mark="▸"; indent=" " ;;
     esac
     # name on the left, info on the right, fit to the pane width
     pad=$((cols - ${#indent} - 2 - ${#name} - ${#info} - 1))
     [ "$pad" -lt 1 ] && pad=1
     line="$(printf '%s%s %s%*s%s ' "$indent" "$mark" "$name" "$pad" '' "$info")"
+    line="${line:0:$((cols - 1))}"
     if [ "$i" -eq "$sel" ]; then
       printf '%s%s%s%s\n' "$REV" "$line" "$RST" "$el"
-    elif [ "$type" = "S" ] && [ "$name" = "$current" ]; then
+    elif { [ "$type" = "S" ] && [ "$name" = "$current" ]; } || { [ "$type" = R ] && [ "$mark" = "●" ]; }; then
       printf '%s%s%s%s\n' "$GREEN" "$line" "$RST" "$el"
     elif [ "$type" = "F" ] && [ "$name" = "$current_group" ]; then
       printf '%s%s%s%s%s\n' "$BOLD" "$GREEN" "$line" "$RST" "$el"
-    elif [ "$type" != "S" ]; then
+    elif [ "$type" != "S" ] && [ "$type" != R ]; then
       printf '%s%s%s%s\n' "$BOLD" "$line" "$RST" "$el"
     else
       printf '%s%s\n' "$line" "$el"
@@ -374,18 +410,26 @@ fold_here() {
   local group; group="$(row_group)"
   [ -z "$group" ] && { status="not in a group"; return; }
   toggle_fold "$group"
-  load; select_group "$group"
+  load
+  if [[ "$group" = host:* ]]; then select_group "${group#host:}"; else select_group "$group"; fi
 }
 
 # Tab / Enter: go to the session, or fold/unfold when on a group line.
 activate() {
   on_row || return
+  if [ "$(row_type)" = R ]; then
+    local target
+    target="$(python3 "$DIR/remote.py" attach "${rgroup[$sel]#host:}" "${rtarget[$sel]}" 2>"$STATE/remote-attach-error")" || { status="could not open remote session"; return; }
+    goto "$target" "${1:-}"
+    return
+  fi
   if on_session; then goto "$(row_name)" "${1:-}"; else fold_here; fi
 }
 
 # J / K: move the group, or the session inside its group, one step.
 move_here() {
   on_row || return
+  case "$(row_type)" in H|h|R) status="host order comes from remotes.json"; return ;; esac
   local dir="$1" type name group i pos=-1 k tmp sibs=()
   type="$(row_type)"; name="$(row_name)"; group="$(row_group)"
   # the rows this one can trade places with, in screen order
@@ -393,7 +437,7 @@ move_here() {
     if [ "$type" = "S" ]; then
       [ "${rtype[$i]}" = "S" ] && [ "${rgroup[$i]}" = "$group" ] && sibs+=("${rname[$i]}")
     else
-      [ "${rtype[$i]}" != "S" ] && sibs+=("${rname[$i]}")
+      { [ "${rtype[$i]}" = G ] || [ "${rtype[$i]}" = F ]; } && sibs+=("${rname[$i]}")
     fi
   done
   for i in "${!sibs[@]}"; do [ "${sibs[$i]}" = "$name" ] && pos=$i; done
@@ -423,8 +467,17 @@ tag_session() {
 }
 
 new_session() {
+  if on_row && { [ "$(row_type)" = R ] || [[ "$(row_group)" = host:* && "$(row_group)" != host:local ]]; }; then
+    local remote_name target
+    remote_name="$(ask 'new remote session name: ')"
+    [ -z "$remote_name" ] && return
+    target="$(python3 "$DIR/remote.py" create "${rgroup[$sel]#host:}" "$remote_name" 2>"$STATE/remote-attach-error")" || { status="remote creation failed"; return; }
+    load; goto "$target" work; select_session "$target"
+    return
+  fi
   local name group=""
   on_row && group="$(row_group)"
+  [ "$group" = host:local ] && group=""
   name="$(ask 'new session name: ')"
   [ -z "$name" ] && { status="cancelled"; return; }
   if tmux new-session -d -s "$name" 2>/dev/null; then
@@ -437,6 +490,14 @@ new_session() {
 
 rename_session() {
   on_row || return
+  case "$(row_type)" in H|h) status="host names come from remotes.json"; return ;; esac
+  if [ "$(row_type)" = R ]; then
+    local remote_name
+    remote_name="$(ask "rename '$(row_name)' to: ")"
+    [ -z "$remote_name" ] && return
+    python3 "$DIR/remote.py" rename "${rgroup[$sel]#host:}" "${rtarget[$sel]}" "$remote_name" 2>"$STATE/remote-attach-error" && status="renamed" || status="remote rename failed"
+    load; return
+  fi
   local old new
   old="$(row_name)"
   if on_session; then
@@ -460,6 +521,18 @@ rename_session() {
 }
 
 kill_session() {
+  if on_row && [ "$(row_type)" = R ]; then
+    local remote_host="${rgroup[$sel]#host:}" remote_id="${rtarget[$sel]}" answer other
+    answer="$(ask "kill $remote_host/$(row_name)? [y/N] ")"
+    [ "$answer" = y ] || [ "$answer" = Y ] || return
+    if [ "$current" = "tmax-$remote_host-${remote_id#\$}" ]; then
+      other="$(tmux list-sessions -F '#{?@tmax-remote-host,,#{session_name}}' | sed '/^$/d' | head -1)"
+      if [ -z "$other" ]; then status="switch to a local session before killing this one"; return; fi
+      goto "$other"
+    fi
+    python3 "$DIR/remote.py" remove "$remote_host" "$remote_id" 2>"$STATE/remote-attach-error" && status="killed remote session" || status="remote kill failed"
+    load; return
+  fi
   on_session || { status="select a session to kill"; return; }
   local target yn other i
   target="$(row_name)"

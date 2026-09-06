@@ -29,6 +29,27 @@ that later: TPM runs every `*.tmux` file in a plugin folder.)
 
 ## Session sidebar
 
+The sidebar is optional. For the native tmux session tree plus remote access,
+put this **before** the `run-shell ~/tmax/tmax.tmux` line in `~/.tmux.conf`:
+
+```tmux
+set -g @tmax-sidebar off
+```
+
+Reload with `tmux source-file ~/.tmux.conf`. Your prefix and other appearance
+settings stay as configured. `prefix + s` refreshes the configured hosts and
+opens tmux's normal session tree. Remote entries include their host and session
+name; selecting one connects its panes. Until selected, an entry is only a
+lightweight local placeholder. Previously opened remote sessions also appear
+in other native tmux session/window navigation commands.
+
+The remote bridge and its command routing still need tmax loaded; the sidebar
+does not. Native chooser deletion operates on the local representation, while
+the routed pane/window kill keys act remotely. Arbitrary custom commands are
+still not translated. Set `@tmax-sidebar on` and reload to restore the sidebar.
+
+### Sidebar mode
+
 `prefix + s` opens a sidebar on the left. Your work stays on the right.
 
 ```
@@ -76,7 +97,7 @@ The sidebar follows you. If you change session another way (for example
 
 ### Overview
 
-While the sidebar is open, the right side does not show one window. It shows
+With `@tmax-sidebar-overview` set to `on`, the right side shows
 every window of the session, tiled, like an overview. Each tile has a title
 line (`1: logs *`, the `*` marks the current window) and the live text of that
 window, refreshed once a second.
@@ -110,6 +131,78 @@ bar while sidebar mode is on and goes away when you leave. Set
 `@tmax-sidebar-overview` to `off` to get a plain sidebar next to your window.
 
 The stock tmux session tree is still there on `prefix + S`.
+
+### Remote computers
+
+The sidebar always has a `local` heading, followed by the computers in
+`remotes.json`. Hosts are entirely user-configured; a fresh checkout makes no
+remote connections. Copy `remotes.example.json` to `remotes.json` and edit it
+with your SSH destinations. The local file is ignored by Git. Space or
+Enter on a heading folds it; Enter on a session opens it. Existing groups
+remain inside `local`. `n`, `r`, and confirmed `d` work on remote sessions.
+
+Remote sessions use local proxy windows and panes backed by tmux control
+mode over SSH. There is one local status bar and one local prefix. The
+remote machine keeps its own tmux configuration and running applications.
+No software is installed remotely. Python 3.9+ is required locally and
+tmux 3.4+ is required on the hosts.
+
+Recognized bindings for new windows, splitting, pane/window deletion,
+window renaming, and layouts are routed to the remote machine. Navigation,
+copy mode, paste, and the sidebar stay local. Window rename uses a small
+prompt popup. Custom bindings and commands typed directly at the tmux `:`
+prompt are **not** generally translated; use the routed keys for remote
+creation and deletion. The local copies are implementation details: deleting
+a proxy through a direct local tmux command only removes that local copy,
+and the synchronizer may recreate it.
+
+Remote previews are disabled. Hidden panes pause their output subscriptions
+without blocking the remote programs; returning to a window restores its
+current screen. Metadata refreshes every 10 seconds in the sidebar, and
+opened sessions reconcile their windows/panes every 5 seconds while attached
+(15 seconds while detached). Connections retry after interruption; keystrokes
+typed while disconnected are discarded. Ordinary client-size negotiation
+applies when another terminal is attached on the remote computer.
+
+This is an initial bridge: local copy-mode history starts when a pane is
+opened; it does not import remote scrollback. Exact restoration of every
+terminal mode, arbitrary custom bindings, and mixed local/remote layouts are
+not guaranteed. Each opened remote pane currently uses a small Python process
+and an SSH channel, sharing one SSH transport per host. RAM therefore scales
+with the number of opened panes. Merely listing sessions does not create
+these processes.
+
+Host configuration example:
+
+```json
+{
+  "laptop": {
+    "destination": "user@laptop",
+    "tmux": "/opt/homebrew/bin/tmux",
+    "control_path": "~/.ssh/tmax-laptop.sock"
+  },
+  "server": {"destination": "server", "tmux": "tmux"}
+}
+```
+
+`destination` uses normal SSH configuration. `tmux` is the executable path;
+an optional `socket` selects a nondefault tmux server. Set `TMAX_REMOTES_FILE`
+in the local tmux environment to use a different JSON file. An empty object
+disables remote hosts while keeping the `local` heading.
+
+For a host that uses password authentication, open a shared connection from a terminal:
+
+```sh
+ssh -M -S ~/.ssh/tmax-laptop.sock -o ControlPersist=30m -fnN user@laptop
+```
+
+The password stays in that terminal. A configured `control_path` must already
+be connected; tmax won't prompt for a password in the sidebar. Hosts without
+that field use unattended SSH authentication and reuse a private master socket.
+Offline hosts remain in the list with cached session names. Diagnostic output
+is in `remote.log` in the private `tmax-UID-HASH` directory under the system
+temporary directory. Failed sidebar mutations are recorded at
+`$TMAX_STATE_DIR/remote-attach-error` (the usual state directory by default).
 
 ### Groups
 
@@ -149,7 +242,7 @@ Put these in `~/.tmux.conf` **before** the `run-shell` line:
 set -g @tmax-sidebar-key    "s"    # prefix + key
 set -g @tmax-sidebar-width  "28"   # columns
 set -g @tmax-sidebar-follow "on"   # "off" = sidebar stays where it was opened
-set -g @tmax-sidebar-overview "on" # "off" = no overview, sidebar next to your window
+set -g @tmax-sidebar-overview "off" # default; "on" enables local overview previews
 set -g @tmax-sidebar-hover "off"   # "on" = moving the cursor switches at once, no Tab needed
 ```
 
@@ -184,3 +277,18 @@ python3 test/sidebar_test.py
 
 Starts a throwaway tmux server, drives the sidebar with fake key presses, and
 prints the state after each step. Your real tmux server is not touched.
+
+The remote integration suite creates and removes its own tmux servers on
+both ends, using an existing SSH connection or configured key:
+
+```sh
+python3 test/remote_integration_test.py --host user@test-host
+python3 test/remote_integration_test.py --native --host user@test-host
+# For password authentication or an executable outside the remote SSH PATH:
+python3 test/remote_integration_test.py --host user@laptop \
+  --master ~/.ssh/tmax-laptop.sock --tmux /opt/homebrew/bin/tmux
+```
+
+It checks host folding, interactive input/output, remote windows/splits/zoom,
+local sidebar access, hidden output, reconnection, Vim restoration, and
+confirmed session/pane deletion. Existing remote sessions are not targeted.

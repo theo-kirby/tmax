@@ -1,0 +1,10 @@
+{
+  "laptop": {
+    "destination": "laptop",
+    "tmux": "tmux"
+  },
+  "server": {
+    "destination": "server",
+    "tmux": "tmux"
+  }
+}

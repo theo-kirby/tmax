@@ -40,7 +40,10 @@ pane_id="$(tmux show-option -gqv "$OPT")"
 STATE="${TMAX_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tmax}"
 LOCK="$STATE/lock"
 
-overview_on() { [ "$(get_opt "@tmax-sidebar-overview" on)" = "on" ]; }
+overview_on() {
+  [ -z "$(tmux show-option -qv -t "${1:-}" '@tmax-remote-host' 2>/dev/null)" ] &&
+    [ "$(get_opt "@tmax-sidebar-overview" off)" = "on" ]
+}
 
 pane_alive() {
   [ -n "$1" ] && tmux list-panes -a -F '#{pane_id}' | grep -qx -- "$1"
@@ -111,7 +114,7 @@ show_overview() {   # show_overview SESSION
 open_sidebar() {   # open_sidebar [SESSION]
   local id sess="${1:-}" ovw
   [ -z "$sess" ] && sess="$(tmux display-message -p '#{session_name}')"
-  if overview_on; then
+  if overview_on "$sess"; then
     # Build the overview first, then start the sidebar inside it. This way the
     # window you were on never gets touched.
     lock
@@ -140,7 +143,7 @@ bring_here() {   # bring_here [SESSION]
   local sess="${1:-}" cur_win side_win
   [ -z "$sess" ] && sess="$(tmux display-message -p '#{session_name}')"
   lock
-  if overview_on; then
+  if overview_on "$sess"; then
     show_overview "$sess"
     return
   fi

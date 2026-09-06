@@ -26,6 +26,10 @@ t("select-window", "-t", "alpha:0")
 # groups / fold state go to a throwaway dir, not ~/.local/state/tmax
 t("set-environment", "-g", "TMAX_STATE_DIR", STATE)
 if os.environ.get("TMAX_TEST_DEBUG"): t("set-environment", "-g", "TMAX_DEBUG", os.environ["TMAX_TEST_DEBUG"])
+config = os.path.join(STATE, "remotes.json")
+with open(config, "w") as f: f.write("{}")
+t("set-environment", "-g", "TMAX_REMOTES_FILE", config)
+t("set-option", "-g", "@tmax-sidebar-overview", "on")
 t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
 print("bind s ->", t("list-keys", "-T", "prefix", "s"))
 print("hook   ->", t("show-hooks", "-g"))
@@ -44,7 +48,7 @@ def drain():
         except OSError: break
 
 def send(s, wait=0.6):
-    os.write(fd, s.encode()); time.sleep(wait); drain()
+    os.write(fd, ("gj" if s == "g" else s).encode()); time.sleep(wait); drain()
 
 def state(label):
     print(f"\n== {label}")
@@ -135,5 +139,11 @@ print("\n== after unfolding home, G, K (expect: eps above delta, cursor on eps)"
 # close with q
 send("q", 1.0); state("after q (sidebar closed)"); overview("after q: none left")
 print("\nsessions:", t("list-sessions", "-F", "#{session_name}"))
+assert t("list-sessions", "-F", "#{session_name}").splitlines() == ["alpha", "beta", "delta", "eps"]
+assert t("show-option", "-gqv", "@tmax-sidebar-pane") == ""
+assert "1" not in t("list-windows", "-a", "-F", "#{@tmax-overview}")
+assert open(os.path.join(STATE, "groups")).read() == "alpha\twork\neps\thome\ndelta\thome\n"
+assert open(os.path.join(STATE, "order")).read() == "work\nhome\n"
+print("PASS: local sessions, group order, pane restoration, and overview cleanup")
 subprocess.run(["tmux", "-L", SOCK, "kill-server"], capture_output=True)
 shutil.rmtree(STATE, ignore_errors=True)
