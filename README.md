@@ -1,12 +1,11 @@
 # tmax
 
-Small additions on top of tmux, built for one person, one feature at a time.
+QOL additions on top of tmux
 
-tmax gives one tmux client a view of every session on every machine you care
-about. `prefix + Space` opens an fzf popup listing local sessions and the
-sessions on remote computers side by side; picking a remote one attaches it
-through SSH as ordinary local windows and panes, with your own prefix, status
-bar and key bindings. An optional sidebar lists sessions in a pane instead.
+tmax allows for a single deduplicated tmux server to be accessed across all your devices
+
+![tmax session switcher](docs/tmax-example.png)
+
 
 ## Status
 
