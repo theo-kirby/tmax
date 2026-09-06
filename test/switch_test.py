@@ -37,6 +37,11 @@ t("set-option", "-g", "@tmax-sidebar", "off")
 t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
 binding = t("list-keys", "-T", "prefix", "Space")
 expect("Space opens a popup", "display-popup" in binding and "switch" in binding, True)
+expect("popup border follows status-style", "-S 'fg=#{?#{m/r:bg=,#{status-style}}" in binding, True)
+sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
+import remote
+expect("fzf colour names", [remote.fzf_color(c) for c in ["green", "colour235", "color7", "brightred", "#ff8800", "default"]],
+       ["green", "235", "7", "bright-red", "#ff8800", None])
 
 # The list itself, without a terminal.
 env = dict(os.environ, TMUX=t("display-message", "-p", "#{socket_path}") + ",0,0")
@@ -87,6 +92,10 @@ expect("normal mode ignores typed letters (stays on first item)", session(), "al
 send("\x02 ", 1.5)
 send("i", 0.4); send("gam", 1.0); send("\r", 1.5)
 expect("i then gam + Enter switches to gamma", session(), "gamma")
+
+send("\x02 ", 1.5)
+send("i", 0.4); send("gamx", 0.6); send("\x7f", 0.6); send("\r", 1.5)
+expect("insert mode: backspace removes the last character", session(), "gamma")
 
 send("\x02 ", 1.5)
 send("i", 0.4); send("delta", 1.0); send("\r", 1.5)

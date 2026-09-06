@@ -57,10 +57,12 @@ fi
 #   set -g @tmax-switch-width  "60%"
 #   set -g @tmax-switch-height "50%"
 # display-popup does not expand formats in its command (tmux 3.4), so run-shell
-# fills in the client name and opens the popup on that client.
+# fills in the client name and opens the popup on that client. The border takes
+# the status bar's background colour (or the default when it has none).
 switch_key="$(get_opt "@tmax-switch-key" "Space")"
 switch_size="-w '$(get_opt "@tmax-switch-width" "60%")' -h '$(get_opt "@tmax-switch-height" "50%")'"
-tmux bind-key "$switch_key" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' sessions ' $switch_size \"python3 '$CURRENT_DIR/scripts/remote.py' switch '#{q:client_name}'\""
+switch_border="-S 'fg=#{?#{m/r:bg=,#{status-style}},#{s/.*bg=([^,]*).*/\\1/:status-style},default}'"
+tmux bind-key "$switch_key" run-shell -b "tmux display-popup -c '#{q:client_name}' -E -T ' sessions ' $switch_size $switch_border \"python3 '$CURRENT_DIR/scripts/remote.py' switch '#{q:client_name}'\""
 
 # Keep recognized local bindings intact; route their remote branch via control mode.
 python3 "$CURRENT_DIR/scripts/remote.py" install

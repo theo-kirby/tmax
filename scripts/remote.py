@@ -300,9 +300,36 @@ def switch_refresh(snapshot):
 
 # Keys that only type text: ignored in normal mode, released in insert mode.
 SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) for c in range(ord("A"), ord("Z") + 1)] \
-    + [str(d) for d in range(10)] + ["-", "_", ".", "space", "backspace"]
+    + [str(d) for d in range(10)] + ["-", "_", ".", "space"]
+# Keys whose fzf default edits the query: unbound in normal mode, restored in insert mode.
+SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
 SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
                       "q": "abort", "i": "enter-insert", "/": "enter-insert"}
+
+
+def fzf_color(value):
+    """A tmux colour name as fzf spells it, or None for the terminal default."""
+    value = value.lower()
+    if value in ("", "default", "terminal"):
+        return None
+    match = re.fullmatch(r"colou?r(\d+)", value)
+    if match:
+        return match.group(1)
+    if value.startswith("bright"):
+        return "bright-" + value[6:]
+    return value
+
+
+def switch_colors():
+    """fzf --color entries that paint the current line like the tmux status bar."""
+    style = dict(part.split("=", 1) for part in local("display-message", "-p", "#{status-style}", check=False).split(",") if "=" in part)
+    bg, fg = fzf_color(style.get("bg", "")), fzf_color(style.get("fg", ""))
+    colors = []
+    if bg:
+        colors += ["bg+:" + bg, "hl:" + bg, "pointer:" + bg, "prompt:" + bg, "hl+:" + (fg or "-1") + ":underline"]
+    if fg:
+        colors.append("fg+:" + fg)
+    return colors
 
 
 def switch(client):
@@ -327,9 +354,11 @@ def switch(client):
     snapshot.write_text("\n".join(lines) + "\n")
     refresh_cmd = shlex.join(SELF + ["switch-refresh", str(snapshot)])
     modal = sorted(set(SWITCH_TYPING_KEYS) | set(SWITCH_NORMAL_KEYS))
-    to_insert = "change-prompt(insert> )+unbind(" + ",".join(modal) + ")"
-    to_normal = "change-prompt(normal> )+rebind(" + ",".join(modal) + ")"
-    binds = [key + ":ignore" for key in SWITCH_TYPING_KEYS if key not in SWITCH_NORMAL_KEYS]
+    edit = ",".join(SWITCH_EDIT_KEYS)
+    to_insert = "change-prompt(insert> )+unbind(" + ",".join(modal) + ")+rebind(" + edit + ")"
+    to_normal = "change-prompt(normal> )+rebind(" + ",".join(modal) + ")+unbind(" + edit + ")"
+    binds = ["start:unbind(" + edit + ")"]
+    binds += [key + ":ignore" for key in SWITCH_TYPING_KEYS if key not in SWITCH_NORMAL_KEYS]
     binds += [key + ":" + (to_insert if action == "enter-insert" else action) for key, action in SWITCH_NORMAL_KEYS.items()]
     binds.append("esc:transform:[ \"$FZF_PROMPT\" = \"insert> \" ] && echo " + shlex.quote(to_normal) + " || echo abort")
     binds.append("load:bg-transform(" + refresh_cmd + ")+unbind(load)")
@@ -337,6 +366,9 @@ def switch(client):
                "--delimiter", "\t", "--with-nth", "3,4", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1"]
     for bind in binds:
         command += ["--bind", bind]
+    colors = switch_colors()
+    if colors:
+        command += ["--color", ",".join(colors)]
     try:
         result = subprocess.run(command, input="\n".join(lines) + "\n", capture_output=True, text=True,
                                 env=dict(os.environ, SHELL="/bin/sh"))

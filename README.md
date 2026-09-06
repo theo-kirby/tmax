@@ -62,13 +62,17 @@ normal mode with the filter kept.
 
 Remote sessions are named `host/session` and connect when selected.
 
+The popup border and the highlighted line use the colours of your status
+bar (`status-style`). A status bar without a background colour leaves the
+border in the default colour.
+
 The list appears at once with what tmux already knows (local sessions and
 the remote ones seen before). The configured hosts are then refreshed in the
 background, and the list is reloaded only if something changed, keeping the
 cursor on the same session. Hosts that are offline keep their cached entries.
 
 `fzf` 0.62 or newer must be installed (`brew install fzf`). Without it the key
-shows a short message in the status line. tmux 3.2+ is needed for popups.
+shows a short message in the status line. tmux 3.3+ is needed for the popup.
 
 This replaces tmux's default `prefix + Space` (`next-layout`); that command
 is still available from the `:` prompt or by binding another key.
