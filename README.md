@@ -89,10 +89,10 @@ or off.
 ```
 ╭─ sessions ─────────────────────────────────╮
 │ normal>                             11/11  │
-│▌ lab     2 windows (attached)   macbook    │
-│  tmax    2 windows              macbook    │
-│  ouro    2 windows              mac mini   │
-│  0       2 windows              5090 box   │
+│▌ work    2 windows (attached)   laptop     │
+│  notes   2 windows              laptop     │
+│  build   2 windows              desk pc    │
+│  train   2 windows              gpu box    │
 ╰────────────────────────────────────────────╯
 ```
 
@@ -108,9 +108,9 @@ names this machine:
 
 ```json
 {
-  "local": {"label": "macbook air"},
-  "mmini": {"destination": "mmini", "tmux": "/opt/homebrew/bin/tmux", "label": "mac mini"},
-  "sb1x":  {"destination": "sb1x", "tmux": "tmux", "label": "5090 box", "colour": "yellow"}
+  "local": {"label": "laptop"},
+  "desk":  {"destination": "desk", "tmux": "/opt/homebrew/bin/tmux", "label": "desk pc"},
+  "gpu":   {"destination": "gpu-box", "tmux": "tmux", "label": "gpu box", "colour": "yellow"}
 }
 ```
 
