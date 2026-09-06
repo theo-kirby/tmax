@@ -99,7 +99,7 @@ or off.
 Each row is the session name, its window count, and the name of the
 computer. Local sessions come first, then each host in the order of
 `remotes.json`. Computer names are written in the terminal's own colours:
-magenta for local, then blue, yellow and red for the hosts in order. On the
+blue for local, then magenta, red and yellow for the hosts in order. On the
 highlighted row the name takes the row's colour like the rest of the text.
 The name is the entry's `label` in `remotes.json`, or the host key when
 there is none; an optional `colour` (a tmux colour name, `colourN`, or

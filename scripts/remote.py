@@ -273,7 +273,7 @@ def tree(client, pane):
 
 
 # Host name colours: terminal colours, local first, then remote hosts in remotes.json order. A "colour" per entry overrides.
-HOST_COLOURS = ["magenta", "blue", "yellow", "red"]
+HOST_COLOURS = ["blue", "magenta", "red", "yellow"]
 ANSI = {"black": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "white": 7}
 
 
