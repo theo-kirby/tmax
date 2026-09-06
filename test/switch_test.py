@@ -77,20 +77,36 @@ time.sleep(0.8); drain()
 expect("start on alpha", session(), "alpha")
 
 send("\x02 ", 1.5)              # C-b Space: open the popup, give fzf time to start
-send("gam", 1.0); send("\r", 1.5)
-expect("typing gam + Enter switches to gamma", session(), "gamma")
+send("j", 0.4); send("j", 0.4); send("\r", 1.5)
+expect("normal mode: j j Enter switches to gamma", session(), "gamma")
 
 send("\x02 ", 1.5)
-send("delta", 1.0); send("\r", 1.5)
+send("gam", 0.6); send("\r", 1.5)
+expect("normal mode ignores typed letters (stays on first item)", session(), "alpha")
+
+send("\x02 ", 1.5)
+send("i", 0.4); send("gam", 1.0); send("\r", 1.5)
+expect("i then gam + Enter switches to gamma", session(), "gamma")
+
+send("\x02 ", 1.5)
+send("i", 0.4); send("delta", 1.0); send("\r", 1.5)
 expect("no match + Enter creates delta", session(), "delta")
 expect("delta exists", "delta" in t("list-sessions", "-F", "#{session_name}").split(), True)
 
 send("\x02 ", 1.5)
-send("\x1b", 1.5)               # Esc cancels
-expect("Esc keeps the session", session(), "delta")
+send("i", 0.4); send("a", 0.6); send("\x1b", 0.8); send("j", 0.4); send("\r", 1.5)
+expect("insert a, Esc back to normal, j Enter -> second a-match (gamma)", session(), "gamma")
 
 send("\x02 ", 1.5)
-send("alp", 1.0); send("\r", 1.5)
+send("\x1b", 1.5)               # Esc in normal mode cancels
+expect("Esc keeps the session", session(), "gamma")
+
+send("\x02 ", 1.5)
+send("q", 1.5)
+expect("q keeps the session", session(), "gamma")
+
+send("\x02 ", 1.5)
+send("i", 0.4); send("alp", 1.0); send("\r", 1.5)
 expect("back to alpha", session(), "alpha")
 
 os.kill(pid, 15)

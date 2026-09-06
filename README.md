@@ -36,22 +36,38 @@ or off.
 
 ```
 +--------------------------------------------+
-| session> ou                          1/11  |
-| > mmini/ouro   2 windows                   |
-|                                            |
+| normal>                             11/11  |
+| > lab          2 windows (attached)        |
+|   tmax         2 windows                   |
+|   mmini/ouro   2 windows                   |
 +--------------------------------------------+
 ```
 
-Type to filter on the name, `Enter` switches, `Esc` cancels. If nothing
-matches, `Enter` creates a local session named after what you typed and
-switches to it. Remote sessions are named `host/session` and connect when
-selected.
+The popup starts in a vim-like normal mode. Letters do nothing there except
+the keys below, so `j` and `k` move without typing into the filter. Press
+`i` (or `/`) for insert mode: type to filter on the name, `Esc` goes back to
+normal mode with the filter kept.
 
-The list shows what tmux already knows right away, then the configured hosts
-are refreshed in the background and the list updates in place. Hosts that are
-offline just keep their cached entries.
+| Mode   | Key             | Action                                       |
+|--------|-----------------|----------------------------------------------|
+| normal | `j` `k` arrows  | move                                         |
+| normal | `g` `G`         | first / last                                 |
+| normal | `Ctrl-d` `Ctrl-u` | half page down / up                        |
+| normal | `i` `/`         | insert mode                                  |
+| normal | `Enter`         | go to the session                            |
+| normal | `q` `Esc`       | close                                        |
+| insert | typing          | filter; `Ctrl-j` `Ctrl-k` still move         |
+| insert | `Enter`         | go to the session; with no match, create a local session named after the text |
+| insert | `Esc`           | back to normal mode                          |
 
-`fzf` 0.36 or newer must be installed (`brew install fzf`). Without it the key
+Remote sessions are named `host/session` and connect when selected.
+
+The list appears at once with what tmux already knows (local sessions and
+the remote ones seen before). The configured hosts are then refreshed in the
+background, and the list is reloaded only if something changed, keeping the
+cursor on the same session. Hosts that are offline keep their cached entries.
+
+`fzf` 0.62 or newer must be installed (`brew install fzf`). Without it the key
 shows a short message in the status line. tmux 3.2+ is needed for popups.
 
 This replaces tmux's default `prefix + Space` (`next-layout`); that command

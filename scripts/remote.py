@@ -265,7 +265,8 @@ def tree(client, pane):
 def switch_rows(refresh_hosts=False):
     """Lines for the fzf switcher: ID, name, padded name, details (tab-separated); local sessions first, then host/name.
 
-    fzf matches only the name (--nth counts fields after --with-nth has picked the shown ones)."""
+    fzf matches only the name (--nth counts fields after --with-nth has picked the shown ones) and
+    tracks the cursor by ID across reloads."""
     errors = discover() if refresh_hosts else []
     entries = []
     for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t"
@@ -284,20 +285,63 @@ def switch_list(*flags):
     print("\n".join(lines))
 
 
+def switch_refresh(snapshot):
+    """Run by fzf in the background: refresh hosts, and ask fzf to reload only if the list changed."""
+    path = Path(snapshot)
+    lines, _ = switch_rows(True)
+    text = "\n".join(lines) + "\n"
+    if not path.exists() or path.read_text() == text:
+        return
+    temp = path.with_suffix(".tmp")
+    temp.write_text(text)
+    temp.replace(path)
+    print("reload(cat " + shlex.quote(str(path)) + ")")
+
+
+# Keys that only type text: ignored in normal mode, released in insert mode.
+SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) for c in range(ord("A"), ord("Z") + 1)] \
+    + [str(d) for d in range(10)] + ["-", "_", ".", "space", "backspace"]
+SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
+                      "q": "abort", "i": "enter-insert", "/": "enter-insert"}
+
+
 def switch(client):
-    """fzf popup that switches the client to the chosen session, or creates one when nothing matches."""
+    """fzf popup that switches the client to the chosen session, or creates one when nothing matches.
+
+    Starts in a vim-like normal mode (j/k move, Enter picks, q or Esc leaves); i or / enters insert
+    mode for typing a filter and Esc returns. The list shows what tmux already knows immediately;
+    hosts are refreshed in the background and the list is reloaded only when something changed."""
     import shutil
     fzf = shutil.which("fzf") or next((p for p in ["/opt/homebrew/bin/fzf", "/usr/local/bin/fzf"] if os.path.exists(p)), None)
     if not fzf:
         local("display-message", "-c", client, "tmax: fzf not found (brew install fzf)", check=False)
         return
     lines, _ = switch_rows()
-    # Show what is known right away; the refreshed host list replaces it when discovery finishes.
-    reload = shlex.join(SELF + ["switch-list", "--refresh"])
-    result = subprocess.run([fzf, "--reverse", "--no-multi", "--cycle", "--info=inline", "--print-query",
-                             "--prompt", "session> ", "--delimiter", "\t", "--with-nth", "3,4", "--nth", "1", "--tabstop", "1",
-                             "--bind", "start:reload-sync(" + reload + ")"],
-                            input="\n".join(lines) + "\n", capture_output=True, text=True)
+    for stale in RUNTIME.glob("switch-*.txt"):
+        # Left behind when a popup was killed instead of closed.
+        with contextlib.suppress(ValueError, OSError):
+            os.kill(int(stale.stem.split("-", 1)[1]), 0)
+            continue
+        stale.unlink(missing_ok=True)
+    snapshot = RUNTIME / ("switch-" + str(os.getpid()) + ".txt")
+    snapshot.write_text("\n".join(lines) + "\n")
+    refresh_cmd = shlex.join(SELF + ["switch-refresh", str(snapshot)])
+    modal = sorted(set(SWITCH_TYPING_KEYS) | set(SWITCH_NORMAL_KEYS))
+    to_insert = "change-prompt(insert> )+unbind(" + ",".join(modal) + ")"
+    to_normal = "change-prompt(normal> )+rebind(" + ",".join(modal) + ")"
+    binds = [key + ":ignore" for key in SWITCH_TYPING_KEYS if key not in SWITCH_NORMAL_KEYS]
+    binds += [key + ":" + (to_insert if action == "enter-insert" else action) for key, action in SWITCH_NORMAL_KEYS.items()]
+    binds.append("esc:transform:[ \"$FZF_PROMPT\" = \"insert> \" ] && echo " + shlex.quote(to_normal) + " || echo abort")
+    binds.append("load:bg-transform(" + refresh_cmd + ")+unbind(load)")
+    command = [fzf, "--reverse", "--no-multi", "--cycle", "--info=inline", "--print-query", "--prompt", "normal> ",
+               "--delimiter", "\t", "--with-nth", "3,4", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1"]
+    for bind in binds:
+        command += ["--bind", bind]
+    try:
+        result = subprocess.run(command, input="\n".join(lines) + "\n", capture_output=True, text=True,
+                                env=dict(os.environ, SHELL="/bin/sh"))
+    finally:
+        snapshot.unlink(missing_ok=True)
     output = result.stdout.splitlines()
     query = output[0].strip() if output else ""
     if result.returncode == 0 and len(output) > 1:
@@ -718,7 +762,7 @@ def forget_proxy(name):
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list"])
+    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list", "switch-refresh"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":
