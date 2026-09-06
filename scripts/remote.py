@@ -101,9 +101,14 @@ def refresh(host):
             return
         data = {"time": time.time(), "status": "online", "sessions": []}
         try:
-            listing = fetch(host, "list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_windows}")
+            # A host that runs tmax itself has proxy sessions for its own remotes
+            # (possibly this machine). Skip them so sessions are not listed twice.
+            listing = fetch(host, "list-sessions", "-F",
+                            "#{session_id}\t#{session_windows}\t#{@tmax-remote-host}\t#{session_name}")
             for line in listing.splitlines():
-                sid, name, count = line.split("\t", 2)
+                sid, count, proxied, name = line.split("\t", 3)
+                if proxied:
+                    continue
                 if re.fullmatch(r"\$\d+", sid):
                     data["sessions"].append([sid, clean(name), int(count)])
         except Exception as exc:
@@ -137,19 +142,41 @@ def rows():
             print("R\t" + name + "\t" + str(count) + "w\t" + sid)
 
 
-def proxy_name(host, sid):
+def proxy_key(host, sid):
+    """Stable identifier for lock files. The local session is named host/title."""
     return "tmax-" + host + "-" + sid.lstrip("$")
 
 
-def prepare(host, sid, epoch):
+def display_name(host, title):
+    # tmux itself replaces ':' and '.' in session names.
+    return host + "/" + re.sub(r"[:.]", "_", title)
+
+
+def sessions():
+    """Local sessions as (name, remote host, remote session ID); the last two are empty for local ones."""
+    listing = local("list-sessions", "-F", "#{session_name}\t#{@tmax-remote-host}\t#{@tmax-remote-session}", check=False)
+    return [tuple(line.split("\t", 2)) for line in listing.splitlines()]
+
+
+def proxy_session(host, sid):
+    """Name of the local session representing a remote session, or None."""
+    return next((name for name, owner, remote in sessions() if owner == host and remote == sid), None)
+
+
+def prepare(host, sid, epoch, title):
     """Register a cheap native-tree entry without connecting any remote panes."""
     if not re.fullmatch(r"\$\d+", sid):
         raise ValueError("invalid session ID")
-    name = proxy_name(host, sid)
-    with (RUNTIME / (key(name) + ".attach")).open("w") as lock:
+    wanted = display_name(host, title)
+    with (RUNTIME / (key(proxy_key(host, sid)) + ".attach")).open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        found = local("show-options", "-qv", "-t", name, "@tmax-remote-host", check=False)
-        if not found:
+        existing = sessions()
+        name = next((n for n, owner, remote in existing if owner == host and remote == sid), None)
+        taken = any(n == wanted for n, _, _ in existing)
+        if name is None:
+            if taken:
+                raise RuntimeError("local session " + wanted + " already exists")
+            name = wanted
             placeholder = local("new-session", "-d", "-s", name, "-n", "connect", "-P", "-F", "#{window_id}",
                                 "printf 'Select this session to connect to remote tmux.\\n'; sleep 86400")
             local("move-window", "-s", placeholder, "-t", name + ":999999")
@@ -159,17 +186,19 @@ def prepare(host, sid, epoch):
             local("set-option", "-t", name, "@tmax-remote-epoch", epoch)
             local("set-option", "-t", name, "@tmax-sidebar-overview", "off")
             local("set-option", "-t", name, "renumber-windows", "off")
-        elif found != host:
-            raise RuntimeError("proxy session name collision")
         elif local("show-options", "-qv", "-t", name, "@tmax-remote-epoch") != epoch:
             raise RuntimeError("remote session was replaced; close its old local proxy first")
+        elif name != wanted and not taken:
+            # The remote session was renamed; follow it.
+            local("rename-session", "-t", name, wanted)
+            name = wanted
     return name
 
 
 def attach(host, sid, quiet=False):
-    epoch = fetch(host, "display-message", "-p", "-t", sid, "#{pid}:#{session_created}")
-    name = prepare(host, sid, epoch)
-    with (RUNTIME / (key(name) + ".sync")).open("w") as sync_lock:
+    epoch, title = fetch(host, "display-message", "-p", "-t", sid, "#{pid}:#{session_created}\t#{session_name}").split("\t", 1)
+    name = prepare(host, sid, epoch, clean(title))
+    with (RUNTIME / (key(proxy_key(host, sid)) + ".sync")).open("w") as sync_lock:
         fcntl.flock(sync_lock, fcntl.LOCK_EX)
         sync(host, sid)
     spawn("watch", host, sid)
@@ -201,12 +230,13 @@ def tree(client, pane):
             continue
         for sid, title, count in data["sessions"]:
             try:
-                name = proxy_name(host, sid)
-                epoch = local("show-options", "-qv", "-t", name, "@tmax-remote-epoch", check=False)
+                name = proxy_session(host, sid)
+                epoch = local("show-options", "-qv", "-t", name, "@tmax-remote-epoch", check=False) if name else ""
                 if not epoch:
                     epoch = fetch(host, "display-message", "-p", "-t", sid, "#{pid}:#{session_created}")
-                name = prepare(host, sid, epoch)
+                name = prepare(host, sid, epoch, title)
                 local("set-option", "-t", name, "@tmax-remote-name", title)
+                local("set-option", "-t", name, "@tmax-remote-windows", str(count))
             except Exception as exc:
                 errors.append(host + ": " + clean(str(exc)))
         current_ids = {row[0] for row in data["sessions"]}
@@ -218,8 +248,10 @@ def tree(client, pane):
     clients = dict(line.split("\t", 1) for line in local("list-clients", "-F", "#{client_name}\t#{session_id}", check=False).splitlines())
     current = local("display-message", "-p", "-t", clients[client], "#{pane_id}", check=False) if client in clients else None
     if current == pane:
+        # Session lines are named host/name already; keep the text short and stock-like.
         local("choose-tree", "-Zs", "-t", pane, "-F",
-              "#{?@tmax-remote-host,#{@tmax-remote-host}/#{@tmax-remote-name},#{window_name}}")
+              "#{?pane_format,#{pane_current_command},#{?window_format,#{window_name}#{window_flags},"
+              "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}} windows#{?session_attached, (attached),}}}")
     if errors:
         local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
 
@@ -237,15 +269,22 @@ def layout_translate(layout, mapping):
 
 
 def sync(host, sid):
-    name = proxy_name(host, sid)
+    name = proxy_session(host, sid)
+    if name is None:
+        raise RuntimeError("no local session for " + host + " " + sid)
     side = local("show-options", "-gqv", "@tmax-sidebar-pane")
     focused_side = bool(side and local("display-message", "-p", "-t", name, "#{pane_id}") == side)
-    fmt = "#{window_id}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{pane_id}\t#{pane_active}\t#{window_active}\t#{pid}:#{session_created}\t#{window_zoomed_flag}"
+    fmt = "#{window_id}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{pane_id}\t#{pane_active}\t#{window_active}\t#{pid}:#{session_created}\t#{window_zoomed_flag}\t#{session_name}"
     records = [line.split("\t") for line in fetch(host, "list-panes", "-s", "-t", sid, "-F", fmt).splitlines()]
     if records and records[0][7] != local("show-options", "-qv", "-t", name, "@tmax-remote-epoch"):
         raise RuntimeError("remote session was replaced; refusing to reconnect to reused IDs")
+    if records:
+        wanted = display_name(host, clean(records[0][9]))
+        if name != wanted and not any(n == wanted for n, _, _ in sessions()):
+            local("rename-session", "-t", name, wanted)
+            name = wanted
     windows = {}
-    for wid, index, title, layout, pid, active, window_active, epoch, zoomed in records:
+    for wid, index, title, layout, pid, active, window_active, epoch, zoomed, _ in records:
         data = windows.setdefault(wid, {"index": index, "title": clean(title), "layout": layout, "panes": [], "active": window_active, "zoomed": zoomed})
         data["panes"].append(pid)
         if active == "1":
@@ -318,17 +357,20 @@ def sync(host, sid):
 
 
 def watch(host, sid):
-    name = proxy_name(host, sid)
-    with (RUNTIME / (key(name) + ".watch")).open("w") as lock:
+    with (RUNTIME / (key(proxy_key(host, sid)) + ".watch")).open("w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        while local("show-options", "-qv", "-t", name, "@tmax-remote-host", check=False) == host:
+        while True:
+            name = proxy_session(host, sid)
+            if name is None:
+                return
             try:
-                with (RUNTIME / (key(name) + ".sync")).open("w") as sync_lock:
+                with (RUNTIME / (key(proxy_key(host, sid)) + ".sync")).open("w") as sync_lock:
                     fcntl.flock(sync_lock, fcntl.LOCK_EX)
                     sync(host, sid)
+                name = proxy_session(host, sid) or name
                 local("set-option", "-t", name, "@tmax-remote-status", "online")
             except Exception as exc:
                 if missing_session(str(exc)):
@@ -537,7 +579,7 @@ def action(lp, args):
     fields = local("display-message", "-p", "-t", lp, "#{@tmax-remote-host}\t#{@tmax-remote-session}", check=False).split("\t")
     if len(fields) == 2 and fields[0]:
         host, sid = fields
-        with (RUNTIME / (key(proxy_name(host, sid)) + ".sync")).open("w") as lock:
+        with (RUNTIME / (key(proxy_key(host, sid)) + ".sync")).open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             sync(host, sid)
 
@@ -583,12 +625,17 @@ def create(host, name):
 
 def rename(host, sid, name):
     fetch(host, "rename-session", "-t", sid, name)
+    current = proxy_session(host, sid)
+    if current:
+        local("rename-session", "-t", current, display_name(host, clean(name)), check=False)
     refresh(host)
 
 
 def remove(host, sid):
     fetch(host, "kill-session", "-t", sid)
-    forget_proxy(proxy_name(host, sid))
+    current = proxy_session(host, sid)
+    if current:
+        forget_proxy(current)
     refresh(host)
 
 

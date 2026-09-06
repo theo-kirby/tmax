@@ -293,8 +293,7 @@ select_session() {
   for i in ${rtype[@]+"${!rtype[@]}"}; do
     [ "${rtype[$i]}" = "S" ] && [ "${rname[$i]}" = "$1" ] && { sel=$i; return; }
     if [ "${rtype[$i]}" = R ]; then
-      local remote_host="${rgroup[$i]#host:}" remote_sid="${rtarget[$i]#\$}"
-      [ "tmax-$remote_host-$remote_sid" = "$1" ] && { sel=$i; return; }
+      [ "${rgroup[$i]#host:}/${rname[$i]}" = "$1" ] && { sel=$i; return; }
     fi
   done
   select_group "$(lookup_group "$1")"
@@ -324,7 +323,7 @@ render() {
       S) if [ "$name" = "$current" ]; then mark="●"; else mark=" "; fi
          if [ -n "$group" ]; then indent="     "; else indent="   "; fi ;;
       R) mark=" "; indent="   "
-         [ "tmax-${group#host:}-${rtarget[$i]#\$}" = "$current" ] && mark="●" ;;
+         [ "${group#host:}/$name" = "$current" ] && mark="●" ;;
       G) mark="▾"; indent="   " ;;
       F) mark="▸"; indent="   " ;;
       H) mark="▾"; indent=" " ;;
@@ -525,7 +524,7 @@ kill_session() {
     local remote_host="${rgroup[$sel]#host:}" remote_id="${rtarget[$sel]}" answer other
     answer="$(ask "kill $remote_host/$(row_name)? [y/N] ")"
     [ "$answer" = y ] || [ "$answer" = Y ] || return
-    if [ "$current" = "tmax-$remote_host-${remote_id#\$}" ]; then
+    if [ "$current" = "$remote_host/$(row_name)" ]; then
       other="$(tmux list-sessions -F '#{?@tmax-remote-host,,#{session_name}}' | sed '/^$/d' | head -1)"
       if [ -z "$other" ]; then status="switch to a local session before killing this one"; return; fi
       goto "$other"

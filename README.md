@@ -38,8 +38,9 @@ set -g @tmax-sidebar off
 
 Reload with `tmux source-file ~/.tmux.conf`. Your prefix and other appearance
 settings stay as configured. `prefix + s` refreshes the configured hosts and
-opens tmux's normal session tree. Remote entries include their host and session
-name; selecting one connects its panes. Until selected, an entry is only a
+opens tmux's normal session tree. Remote entries are named `host/session`, for
+example `mmini/ares`, while local sessions keep their own names; selecting
+one connects its panes. Until selected, an entry is only a
 lightweight local placeholder. Previously opened remote sessions also appear
 in other native tmux session/window navigation commands.
 
@@ -142,7 +143,8 @@ Enter on a heading folds it; Enter on a session opens it. Existing groups
 remain inside `local`. `n`, `r`, and confirmed `d` work on remote sessions.
 
 Remote sessions use local proxy windows and panes backed by tmux control
-mode over SSH. There is one local status bar and one local prefix. The
+mode over SSH. The local session is named `host/session` (the host key from
+`remotes.json`, then the remote session name) and follows remote renames. There is one local status bar and one local prefix. The
 remote machine keeps its own tmux configuration and running applications.
 No software is installed remotely. Python 3.9+ is required locally and
 tmux 3.4+ is required on the hosts.
@@ -171,6 +173,10 @@ not guaranteed. Each opened remote pane currently uses a small Python process
 and an SSH channel, sharing one SSH transport per host. RAM therefore scales
 with the number of opened panes. Merely listing sessions does not create
 these processes.
+
+If a host runs tmax itself, its own remote proxy sessions (for example the
+ones it holds for this machine) are skipped when listing, so nothing shows up
+twice.
 
 Host configuration example:
 

@@ -25,8 +25,9 @@ def main():
     parser.add_argument("--label", default="remote", help="host label used in the test UI")
     parser.add_argument("--native", action="store_true")
     args = parser.parse_args()
-    proxy = "tmax-" + args.label + "-0"
-    second_proxy = "tmax-" + args.label + "-1"
+    proxy = args.label + "/remote-test"
+    renamed_proxy = args.label + "/renamed remote"
+    second_proxy = args.label + "/new-remote"
     socket = "tmax-integration-" + uuid.uuid4().hex[:10]
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
     if args.master:
@@ -189,6 +190,7 @@ def main():
             time.sleep(0.3)
             send(b"renamed remote\r")
             wait_for(lambda: remote("display-message", "-p", "-t", "$0", "#{session_name}") == "renamed remote", "sidebar renames remote session")
+            wait_for(lambda: renamed_proxy in tmux("list-sessions", "-F", "#{session_name}").splitlines(), "local session name follows the remote rename")
             send(b"n")
             time.sleep(0.3)
             send(b"new-remote\r")
@@ -202,7 +204,7 @@ def main():
             wait_for(lambda: len(remote("list-sessions").splitlines()) == 1, "sidebar confirms and kills remote session")
             wait_for(lambda: "local-test" in tmux("list-clients", "-F", "#{session_name}"), "killing current remote session returns to local")
             remote("kill-session", "-t", "$0")
-            wait_for(lambda: proxy not in tmux("list-sessions", "-F", "#{session_name}"), "externally ended remote session removes its local proxies")
+            wait_for(lambda: renamed_proxy not in tmux("list-sessions", "-F", "#{session_name}"), "externally ended remote session removes its local proxies")
         except Exception:
             if args.native: print("TERMINAL:", bytes(terminal_output[-4000:]))
             print("BIND C:", tmux("list-keys", "-T", "prefix", "c"))
