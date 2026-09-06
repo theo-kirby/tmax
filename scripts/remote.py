@@ -272,13 +272,33 @@ def tree(client, pane):
         local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
 
 
-# Pastel pill backgrounds (256-colour indexes) with dark text: local sessions, then remote hosts in remotes.json order.
-LOCAL_PILL = "252"
-HOST_PILLS = ["152", "218", "151", "223", "183", "229"]
+# Pill colours: terminal colours, local first, then remote hosts in remotes.json order. Green is last
+# because it is usually the status bar (and therefore highlight) colour. A "colour" per entry overrides.
+PILL_COLOURS = ["blue", "cyan", "magenta", "green"]
+ANSI = {"black": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "white": 7}
+DARK_BACKGROUNDS = {"blue", "magenta", "red", "black"}
 
 
-def pill(text, background):
-    return "\x1b[48;5;" + background + "m\x1b[38;5;235m " + text + " \x1b[0m"
+def pill(text, colour):
+    """Text on a coloured background; colour is a tmux-style name, colourN, or #rrggbb."""
+    name = colour.lower()
+    match = re.fullmatch(r"colou?r(\d+)|(\d+)", name)
+    if match:
+        background, foreground = "48;5;" + (match.group(1) or match.group(2)), "30"
+    elif re.fullmatch(r"#[0-9a-f]{6}", name):
+        background, foreground = "48;2;" + ";".join(str(int(name[i:i + 2], 16)) for i in (1, 3, 5)), "30"
+    elif name.startswith("bright") and name[6:] in ANSI:
+        background, foreground = str(100 + ANSI[name[6:]]), "30"
+    elif name in ANSI:
+        background, foreground = str(40 + ANSI[name]), "37" if name in DARK_BACKGROUNDS else "30"
+    else:
+        background, foreground = "7", "39"
+    return "\x1b[" + background + "m\x1b[" + foreground + "m " + text + " \x1b[0m"
+
+
+def pill_colour(host, position):
+    """The entry's own "colour", else the palette colour for its position (0 = local)."""
+    return config().get(host, {}).get("colour") or PILL_COLOURS[position % len(PILL_COLOURS)]
 
 
 def switch_rows(refresh_hosts=False):
@@ -297,7 +317,7 @@ def switch_rows(refresh_hosts=False):
         if host:
             shown = title or (name[len(host) + 1:] if name.startswith(host + "/") else name)
         detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (attached)" if attached != "0" else "")
-        badge = pill(label(host), HOST_PILLS[order.get(host, len(HOST_PILLS) - 1) % len(HOST_PILLS)]) if host else pill(label("local"), LOCAL_PILL)
+        badge = pill(label(host), pill_colour(host, 1 + order.get(host, len(order)))) if host else pill(label("local"), pill_colour("local", 0))
         entries.append((host != "", order.get(host, len(order)), host.lower(), shown.lower(), sid, name, shown, detail, badge))
     entries.sort()
     name_width = max((len(entry[6]) for entry in entries), default=0)

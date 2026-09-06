@@ -46,14 +46,18 @@ or off.
 
 Each row is the session name, its window count, and a pill naming the
 computer. Local sessions come first, then each host in the order of
-`remotes.json`; every host has its own pastel pill colour. The pill text is
-the entry's `label` in `remotes.json`, or the host key when there is none.
-A `local` entry with only a `label` names this machine:
+`remotes.json`. Pills use the terminal's own colours: blue for local, then
+cyan, magenta and green for the hosts in order (green last, since it is
+usually the status bar colour). The pill text is the entry's `label` in
+`remotes.json`, or the host key when there is none, and an optional
+`colour` (a tmux colour name, `colourN`, or `#rrggbb`) picks the pill
+colour. A `local` entry without a `destination` names this machine:
 
 ```json
 {
   "local": {"label": "macbook"},
-  "mmini": {"destination": "mmini", "tmux": "/opt/homebrew/bin/tmux", "label": "mac mini"}
+  "mmini": {"destination": "mmini", "tmux": "/opt/homebrew/bin/tmux", "label": "mac mini"},
+  "sb1x":  {"destination": "sb1x", "tmux": "tmux", "label": "5090 box", "colour": "yellow"}
 }
 ```
 
@@ -265,8 +269,8 @@ Host configuration example:
 ```
 
 `destination` uses normal SSH configuration. `tmux` is the executable path;
-an optional `socket` selects a nondefault tmux server, and an optional
-`label` is the name shown in the session switcher. An entry without a
+an optional `socket` selects a nondefault tmux server, and optional
+`label` and `colour` fields set the pill in the session switcher. An entry without a
 `destination` (such as `local`) is not a host; it only supplies a label. Set `TMAX_REMOTES_FILE`
 in the local tmux environment to use a different JSON file. An empty object
 disables remote hosts while keeping the `local` heading.
