@@ -1,10 +1,15 @@
 {
+  "local": {
+    "label": "this machine"
+  },
   "laptop": {
     "destination": "laptop",
-    "tmux": "tmux"
+    "tmux": "tmux",
+    "label": "laptop"
   },
   "server": {
     "destination": "server",
-    "tmux": "tmux"
+    "tmux": "tmux",
+    "label": "big server"
   }
 }

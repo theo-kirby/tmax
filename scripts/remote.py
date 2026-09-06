@@ -34,8 +34,18 @@ def setup():
     RUNTIME.chmod(0o700)
 
 
-def hosts():
+def config():
     return json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+
+
+def hosts():
+    """Remote hosts: every entry with an SSH destination. A "local" entry may carry only a label."""
+    return {host: entry for host, entry in config().items() if "destination" in entry}
+
+
+def label(host):
+    """Pill text for a host key, or for "local": the entry's label, else the key itself."""
+    return config().get(host, {}).get("label") or host
 
 
 def key(value):
@@ -262,13 +272,13 @@ def tree(client, pane):
         local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
 
 
-# Pill backgrounds (256-colour indexes): local sessions, then remote hosts in remotes.json order.
-LOCAL_PILL = "240"
-HOST_PILLS = ["25", "89", "30", "130", "61", "94"]
+# Pastel pill backgrounds (256-colour indexes) with dark text: local sessions, then remote hosts in remotes.json order.
+LOCAL_PILL = "252"
+HOST_PILLS = ["152", "218", "151", "223", "183", "229"]
 
 
 def pill(text, background):
-    return "\x1b[48;5;" + background + "m\x1b[38;5;255m " + text + " \x1b[0m"
+    return "\x1b[48;5;" + background + "m\x1b[38;5;235m " + text + " \x1b[0m"
 
 
 def switch_rows(refresh_hosts=False):
@@ -287,7 +297,7 @@ def switch_rows(refresh_hosts=False):
         if host:
             shown = title or (name[len(host) + 1:] if name.startswith(host + "/") else name)
         detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (attached)" if attached != "0" else "")
-        badge = pill(host, HOST_PILLS[order.get(host, len(HOST_PILLS) - 1) % len(HOST_PILLS)]) if host else pill("local", LOCAL_PILL)
+        badge = pill(label(host), HOST_PILLS[order.get(host, len(HOST_PILLS) - 1) % len(HOST_PILLS)]) if host else pill(label("local"), LOCAL_PILL)
         entries.append((host != "", order.get(host, len(order)), host.lower(), shown.lower(), sid, name, shown, detail, badge))
     entries.sort()
     name_width = max((len(entry[6]) for entry in entries), default=0)

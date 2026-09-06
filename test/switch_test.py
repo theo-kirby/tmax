@@ -31,7 +31,7 @@ t("new-session", "-d", "-s", "gamma", "-x", "120", "-y", "40")
 t("new-window", "-d", "-t", "beta:")
 t("set-environment", "-g", "TMAX_STATE_DIR", STATE)
 config = os.path.join(STATE, "remotes.json")
-with open(config, "w") as f: f.write("{}")
+with open(config, "w") as f: f.write('{"local": {"label": "this box"}, "srv": {"destination": "nowhere.invalid", "label": "big server"}}')
 t("set-environment", "-g", "TMAX_REMOTES_FILE", config)
 t("set-option", "-g", "@tmax-sidebar", "off")
 t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
@@ -40,7 +40,10 @@ expect("Space opens a popup", "display-popup" in binding and "switch" in binding
 expect("popup border follows status-style", "-S 'fg=#{?#{m/r:bg=,#{status-style}}" in binding, True)
 expect("popup title is white", "-T '#[fg=white] sessions '" in binding, True)
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
+os.environ["TMAX_REMOTES_FILE"] = config   # read when the module loads
 import remote
+expect("labels: host entries and the local entry", [list(remote.hosts()), remote.label("local"), remote.label("srv"), remote.label("other")],
+       [["srv"], "this box", "big server", "other"])
 expect("fzf colour names", [remote.fzf_color(c) for c in ["green", "colour235", "color7", "brightred", "#ff8800", "default"]],
        ["green", "235", "7", "bright-red", "#ff8800", None])
 
@@ -50,7 +53,7 @@ rows = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remo
                       capture_output=True, text=True, env=env).stdout.splitlines()
 expect("switch-list names", [r.split("\t")[1] for r in rows], ["alpha", "beta", "gamma"])
 fields = rows[1].split("\t")
-expect("switch-list beta label", [fields[2].strip(), fields[3].strip(), "local" in fields[4] and "\x1b[" in fields[4]], ["beta", "2 windows", True])
+expect("switch-list beta label", [fields[2].strip(), fields[3].strip(), "this box" in fields[4] and "\x1b[" in fields[4]], ["beta", "2 windows", True])
 
 pid, fd = pty.fork()
 if pid == 0:

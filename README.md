@@ -37,17 +37,25 @@ or off.
 ```
 +---- sessions ------------------------------+
 | normal>                             11/11  |
-|▌ lab     2 windows (attached)   [local]    |
-|  tmax    2 windows              [local]    |
-|  ouro    2 windows              [mmini]    |
-|  0       2 windows              [sb1x]     |
+|▌ lab     2 windows (attached)   [macbook]  |
+|  tmax    2 windows              [macbook]  |
+|  ouro    2 windows              [mac mini] |
+|  0       2 windows              [5090 box] |
 +--------------------------------------------+
 ```
 
 Each row is the session name, its window count, and a pill naming the
-computer: `local`, or the host key from `remotes.json`. Local sessions come
-first, then each host in the order of `remotes.json`; every host has its own
-pill colour.
+computer. Local sessions come first, then each host in the order of
+`remotes.json`; every host has its own pastel pill colour. The pill text is
+the entry's `label` in `remotes.json`, or the host key when there is none.
+A `local` entry with only a `label` names this machine:
+
+```json
+{
+  "local": {"label": "macbook"},
+  "mmini": {"destination": "mmini", "tmux": "/opt/homebrew/bin/tmux", "label": "mac mini"}
+}
+```
 
 The popup starts in a vim-like normal mode. Letters do nothing there except
 the keys below, so `j` and `k` move without typing into the filter. Press
@@ -257,7 +265,9 @@ Host configuration example:
 ```
 
 `destination` uses normal SSH configuration. `tmux` is the executable path;
-an optional `socket` selects a nondefault tmux server. Set `TMAX_REMOTES_FILE`
+an optional `socket` selects a nondefault tmux server, and an optional
+`label` is the name shown in the session switcher. An entry without a
+`destination` (such as `local`) is not a host; it only supplies a label. Set `TMAX_REMOTES_FILE`
 in the local tmux environment to use a different JSON file. An empty object
 disables remote hosts while keeping the `local` heading.
 
