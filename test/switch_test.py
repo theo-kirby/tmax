@@ -41,6 +41,7 @@ expect("popup border follows status-style", "-S 'fg=#{?#{m/r:bg=,#{status-style}
 expect("popup title is white", "-T '#[fg=white] sessions '" in binding, True)
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 os.environ["TMAX_REMOTES_FILE"] = config   # read when the module loads
+os.environ["TMAX_STATE_DIR"] = STATE
 import remote
 expect("host name colours", [remote.tint("x", c).split("m")[0] for c in ["blue", "yellow", "brightred", "colour201", "#ff8800", "12"]],
        ["\x1b[34", "\x1b[33", "\x1b[91", "\x1b[38;5;201", "\x1b[38;2;255;136;0", "\x1b[38;5;12"])
@@ -51,11 +52,49 @@ expect("fzf colour names", [remote.fzf_color(c) for c in ["green", "colour235", 
 
 # The list itself, without a terminal.
 env = dict(os.environ, TMUX=t("display-message", "-p", "#{socket_path}") + ",0,0")
+status = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-status"],
+                        capture_output=True, text=True, env=dict(env, FZF_INFO="3/3")).stdout
+expect("top-right host status", ["big server" in status, "◌" in status, status.rstrip().endswith("3/3")], [True, True, True])
 rows = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
                       capture_output=True, text=True, env=env).stdout.splitlines()
-expect("switch-list names", [r.split("\t")[1] for r in rows], ["alpha", "beta", "gamma"])
-fields = rows[1].split("\t")
+session_rows = [r for r in rows if r.split("\t")[5] == "session"]
+expect("switch-list names", [r.split("\t")[1] for r in session_rows], ["alpha", "beta", "gamma"])
+fields = session_rows[1].split("\t")
 expect("switch-list beta label", [fields[2].strip(), fields[3].strip(), "this box" in fields[4] and "\x1b[" in fields[4]], ["beta", "2 windows", True])
+heading = rows[0].split("\t")[2].strip()
+heading_badge = rows[0].split("\t")[4]
+expect("local host heading", [rows[0].split("\t")[5], heading, "this box" in heading_badge and "\x1b[" in heading_badge],
+       ["group", "▾ this box", True])
+
+# A cached remote proxy lets us exercise host visibility without contacting SSH.
+t("new-session", "-d", "-s", "srv/omega", "-x", "120", "-y", "40")
+t("set-option", "-t", "srv/omega", "@tmax-remote-host", "srv")
+t("set-option", "-t", "srv/omega", "@tmax-remote-name", "omega")
+t("set-option", "-t", "srv/omega", "@tmax-remote-windows", "3")
+def switch_names():
+    result = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
+                            capture_output=True, text=True, env=env)
+    return [row.split("\t")[1] for row in result.stdout.splitlines() if row.split("\t")[5] == "session"]
+expect("hosts are shown by default", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-host", "collapse", "srv"], env=env, check=True)
+expect("one host collapses", switch_names(), ["alpha", "beta", "gamma"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-host", "expand", "srv"], env=env, check=True)
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-favorite", "star", "session", "remote:srv:omega"], env=env, check=True)
+expect("favorite pins to top", switch_names(), ["srv/omega", "alpha", "beta", "gamma"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-host", "collapse", "srv"], env=env, check=True)
+expect("favorite survives collapsed host", switch_names(), ["srv/omega", "alpha", "beta", "gamma"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-host", "expand", "srv"], env=env, check=True)
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-favorite", "unstar", "session", "remote:srv:omega"], env=env, check=True)
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "hide"], env=env, check=True)
+expect("switch-hosts hide", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["alpha", "beta", "gamma"], "off"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "show"], env=env, check=True)
+expect("switch-hosts show", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["alpha", "beta", "gamma", "srv/omega"], "on"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "toggle"], env=env, check=True)
+expect("switch-hosts toggle", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["alpha", "beta", "gamma"], "off"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "toggle"], env=env, check=True)
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -88,12 +127,31 @@ def session(): return t("display-message", "-p", "#{client_session}")
 time.sleep(0.8); drain()
 expect("start on alpha", session(), "alpha")
 
+send("\x02 ", 1.5)
+send("\r", 0.8)
+expect("Enter collapses a host heading", switch_names(), ["srv/omega"])
+send("\r", 0.8)
+expect("Enter expands a host heading", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
+send("h", 0.8)
+expect("normal mode h collapses current host", switch_names(), ["srv/omega"])
+send("h", 0.8)
+expect("normal mode h expands current host", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
+send("H", 0.8)
+expect("normal mode H hides all remote hosts", t("show-option", "-gqv", "@tmax-switch-hosts"), "off")
+send("H", 0.8)
+expect("normal mode H shows all remote hosts", t("show-option", "-gqv", "@tmax-switch-hosts"), "on")
+send("j", 0.3); send("f", 0.8)
+expect("normal mode f stars a session", "local:alpha" in remote.switch_state()["favorites"], True)
+send("f", 0.8)
+expect("normal mode f unstars a session", remote.switch_state()["favorites"], [])
+send("q", 1.0)
+
 send("\x02 ", 1.5)              # C-b Space: open the popup, give fzf time to start
-send("j", 0.4); send("j", 0.4); send("\r", 1.5)
-expect("normal mode: j j Enter switches to gamma", session(), "gamma")
+send("j", 0.4); send("j", 0.4); send("j", 0.4); send("\r", 1.5)
+expect("normal mode: navigation + Enter switches to gamma", session(), "gamma")
 
 send("\x02 ", 1.5)
-send("gam", 0.6); send("\r", 1.5)
+send("gam", 0.6); send("j", 0.3); send("\r", 1.5)
 expect("normal mode ignores typed letters (stays on first item)", session(), "alpha")
 
 send("\x02 ", 1.5)

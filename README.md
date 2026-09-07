@@ -73,10 +73,11 @@ remote connections.
 | `prefix + s`      | sidebar, or tmux's session tree when the sidebar is off |
 | `prefix + S`      | tmux's session tree (sidebar mode)                      |
 
-In the switcher: `j`/`k` move, `Enter` goes, `i` types a filter, `Esc` or
-`q` closes. Remote sessions attach as you pick them. Once attached, they are
-ordinary tmux sessions: `prefix + (` and `)`, the tree, and the switcher all
-move between them.
+In the switcher: `j`/`k` move, `Enter` goes, `h` folds a host, `H` toggles all
+remote hosts, `f` stars a session, `i` types a filter, and `Esc` or `q` closes.
+Remote sessions attach as you pick them. Once attached, they are ordinary tmux
+sessions: `prefix + (` and `)`, the tree, and the switcher all move between
+them.
 
 ## Session switcher
 
@@ -88,16 +89,19 @@ or off.
 ```
 ╭─ sessions ─────────────────────────────────╮
 │ normal>                             11/11  │
-│▌ work    2 windows (attached)   laptop     │
-│  notes   2 windows              laptop     │
-│  build   2 windows              desk pc    │
-│  train   2 windows              gpu box    │
+│  ★ work  2 windows (attached)   laptop     │
+│▌ ▾ laptop              2 sessions  laptop │
+│    notes 2 windows              laptop     │
+│  ▸ desk pc             1 session   desk pc│
+│  ▾ gpu box             1 session   gpu box│
+│    train 2 windows              gpu box    │
 ╰────────────────────────────────────────────╯
 ```
 
-Each row is the session name, its window count, and the name of the
-computer. Local sessions come first, then each host in the order of
-`remotes.json`. Computer names are written in the terminal's own colours:
+Sessions are grouped under one heading per computer. Starred sessions are
+pinned above the groups. Local comes first, then each host in the order of
+`remotes.json`. Both headings and session rows end with a computer-name badge
+written in the terminal's own colour:
 blue for local, then magenta, red and yellow for the hosts in order. On the
 highlighted row the name takes the row's colour like the rest of the text.
 The name is the entry's `label` in `remotes.json`, or the host key when
@@ -125,6 +129,9 @@ back to normal mode with the filter kept.
 | normal | `j` `k` arrows    | move                                         |
 | normal | `g` `G`           | first / last                                 |
 | normal | `Ctrl-d` `Ctrl-u` | half page down / up                          |
+| normal | `h`               | collapse / expand the current session's host |
+| normal | `H`               | hide / show all remote hosts                  |
+| normal | `f`               | star / unstar the current session             |
 | normal | `i` `/`           | insert mode                                  |
 | normal | `Enter`           | go to the session                            |
 | normal | `q` `Esc`         | close                                        |
@@ -145,6 +152,20 @@ cursor on the same session. Hosts that are offline keep their cached
 entries. The popup shows in about 100 ms; a refresh takes half a second or
 so per round trip and never blocks typing.
 
+The top-right status lists every configured remote host: `●` is connected,
+`◌` is checking, and `○` is offline. It updates when the background refresh
+finishes; the normal fzf match count follows the host statuses.
+
+Pressing `h` in normal mode collapses the host under the cursor to its one-line
+heading, or expands it again. `Enter` does the same on a host heading. Press
+`H` to hide or show every remote host. These choices are remembered for later
+openings. Set `@tmax-switch-hosts` to `off` to start with only local sessions.
+
+Press `f` on any local or remote session to star it. Starred sessions move to
+the top of the switcher and stay visible even when their host group is
+collapsed; press `f` again to unstar them. Collapse and favorite state is kept
+in `$TMAX_STATE_DIR/switcher.json`.
+
 The popup has rounded corners. Its border and the highlighted line use the
 colours of your status bar (`status-style`); the title is white. A status
 bar without a background colour leaves the border in the default colour.
@@ -159,6 +180,7 @@ Options, in `~/.tmux.conf` before the `run-shell` line:
 set -g @tmax-switch-key    "Space"  # prefix + key
 set -g @tmax-switch-width  "60%"    # popup size, columns or percent
 set -g @tmax-switch-height "50%"
+set -g @tmax-switch-hosts  "on"     # show remote-host sessions initially
 ```
 
 ## Remote computers
@@ -345,6 +367,7 @@ Put these in `~/.tmux.conf` **before** the `run-shell` line. Defaults shown.
 set -g @tmax-switch-key    "Space"
 set -g @tmax-switch-width  "60%"
 set -g @tmax-switch-height "50%"
+set -g @tmax-switch-hosts  "on"     # H toggles all remote-host sessions
 
 # sidebar
 set -g @tmax-sidebar        "on"    # "off" = native tree on prefix + s

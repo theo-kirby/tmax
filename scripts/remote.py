@@ -25,6 +25,7 @@ IDENTITY = hashlib.sha256((str(STATE) + ",".join(os.environ.get("TMUX", "").spli
 # macOS TMPDIR paths leave too little room for OpenSSH's temporary socket suffix.
 RUNTIME = Path("/tmp") / ("tmax-" + str(os.getuid()) + "-" + IDENTITY)
 SELF = [sys.executable, str(Path(__file__).resolve())]
+SWITCH_STATE = STATE / "switcher.json"
 
 
 def setup():
@@ -299,29 +300,166 @@ def host_colour(host, position):
     return config().get(host, {}).get("colour") or HOST_COLOURS[position % len(HOST_COLOURS)]
 
 
-def switch_rows(refresh_hosts=False):
-    """Lines for the fzf switcher: ID, local name, padded shown name, padded window count, coloured host name (tab-separated).
+def switch_hosts_visible():
+    """Whether remote-host sessions should be included in the switcher."""
+    return local("show-options", "-gqv", "@tmax-switch-hosts", check=False) != "off"
 
-    Local sessions come first, then remote ones in remotes.json order. fzf shows the last three fields and
-    matches only the name (--nth counts fields after --with-nth has picked the shown ones); it tracks the
-    cursor by ID across reloads."""
+
+def switch_hosts(mode="toggle"):
+    """Show, hide, or toggle remote-host sessions in subsequent switcher lists."""
+    if mode not in ("show", "hide", "toggle"):
+        raise ValueError("switch-hosts expects show, hide, or toggle")
+    visible = switch_hosts_visible()
+    if mode == "toggle":
+        visible = not visible
+    else:
+        visible = mode == "show"
+    local("set-option", "-g", "@tmax-switch-hosts", "on" if visible else "off")
+
+
+def switch_state():
+    """Persistent collapsed hosts and favorite sessions for the switcher."""
+    try:
+        data = json.loads(SWITCH_STATE.read_text())
+    except (OSError, ValueError):
+        data = {}
+    return {
+        "collapsed": list(data.get("collapsed", [])),
+        "favorites": list(data.get("favorites", [])),
+    }
+
+
+def save_switch_state(data):
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temp = SWITCH_STATE.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    temp.replace(SWITCH_STATE)
+
+
+def switch_host(mode, host):
+    """Collapse, expand, or toggle one host group."""
+    if mode not in ("collapse", "expand", "toggle"):
+        raise ValueError("switch-host expects collapse, expand, or toggle")
+    if host != "local" and host not in hosts():
+        return
+    data = switch_state()
+    collapsed = set(data["collapsed"])
+    should_collapse = mode == "collapse" or (mode == "toggle" and host not in collapsed)
+    if should_collapse:
+        collapsed.add(host)
+    else:
+        collapsed.discard(host)
+    data["collapsed"] = sorted(collapsed)
+    save_switch_state(data)
+
+
+def switch_favorite(mode, kind, identity):
+    """Star, unstar, or toggle one session identity."""
+    if kind != "session":
+        return
+    if mode not in ("star", "unstar", "toggle"):
+        raise ValueError("switch-favorite expects star, unstar, or toggle")
+    data = switch_state()
+    favorites = set(data["favorites"])
+    should_star = mode == "star" or (mode == "toggle" and identity not in favorites)
+    if should_star:
+        favorites.add(identity)
+    else:
+        favorites.discard(identity)
+    data["favorites"] = sorted(favorites)
+    save_switch_state(data)
+
+
+def switch_enter(kind, host):
+    """fzf transform action: group rows fold; session rows are accepted."""
+    if kind == "group":
+        switch_host("toggle", host)
+        print("reload(" + shlex.join(SELF + ["switch-list"]) + ")")
+    else:
+        print("accept")
+
+
+def host_statuses():
+    """Configured remote hosts and their most recently refreshed status."""
+    result = []
+    for host in hosts():
+        try:
+            status = json.loads((RUNTIME / (key(host) + ".json")).read_text()).get("status", "connecting")
+        except (OSError, ValueError):
+            status = "connecting"
+        result.append((host, status))
+    return result
+
+
+def switch_status():
+    """Fast fzf info-command showing configured host connectivity at top right."""
+    statuses = host_statuses()
+    marks = []
+    for host, status in statuses:
+        if status == "online":
+            mark = tint("●", "green")
+        elif status == "connecting":
+            mark = tint("◌", "yellow")
+        else:
+            mark = tint("○", "brightblack")
+        marks.append(mark + " " + label(host))
+    info = os.environ.get("FZF_INFO", "")
+    print("  ".join(marks + ([info] if info else [])))
+
+
+def host_status_signature():
+    return json.dumps(host_statuses(), separators=(",", ":"))
+
+
+def switch_rows(refresh_hosts=False):
+    """Lines for the grouped fzf switcher.
+
+    Fields are ID, local name, shown name, detail, coloured host, row kind,
+    host key and favorite identity. The final three fields are metadata hidden
+    by --with-nth; the ID lets fzf track the cursor across reloads."""
     errors = discover() if refresh_hosts else []
     order = {host: index for index, host in enumerate(hosts())}
-    entries = []
+    show_hosts = switch_hosts_visible()
+    state = switch_state()
+    collapsed, favorites = set(state["collapsed"]), set(state["favorites"])
+    sessions_by_host = {"local": []}
     for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t#{@tmax-remote-name}\t"
                       "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}}\t#{session_attached}", check=False).splitlines():
         sid, name, host, title, count, attached = line.split("\t", 5)
-        shown = name
-        if host:
-            shown = title or (name[len(host) + 1:] if name.startswith(host + "/") else name)
+        if host and not show_hosts:
+            continue
+        host = host or "local"
+        shown = title or (name[len(host) + 1:] if host != "local" and name.startswith(host + "/") else name)
         detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (attached)" if attached != "0" else "")
-        badge = tint(label(host), host_colour(host, 1 + order.get(host, len(order)))) if host else tint(label("local"), host_colour("local", 0))
-        entries.append((host != "", order.get(host, len(order)), host.lower(), shown.lower(), sid, name, shown, detail, badge))
-    entries.sort()
-    name_width = max((len(entry[6]) for entry in entries), default=0)
-    detail_width = max((len(entry[7]) for entry in entries), default=0)
-    lines = [sid + "\t" + name + "\t" + shown.ljust(name_width) + " \t" + detail.ljust(detail_width) + " \t" + badge
-             for _, _, _, _, sid, name, shown, detail, badge in entries]
+        badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
+        badge = tint(label(host), host_colour(host, badge_position))
+        identity = ("local:" + name) if host == "local" else ("remote:" + host + ":" + shown)
+        sessions_by_host.setdefault(host, []).append((shown.lower(), sid, name, shown, detail, badge, identity))
+    for entries in sessions_by_host.values():
+        entries.sort()
+
+    host_order = ["local"] + [host for host in hosts() if show_hosts and host in sessions_by_host]
+    rows = []
+    # Favorites are real session rows, moved out of their normal host group.
+    for host in host_order:
+        for _, sid, name, shown, detail, badge, identity in sessions_by_host.get(host, []):
+            if identity in favorites:
+                rows.append((sid, name, "★ " + shown, detail, badge, "session", host, identity))
+    for host in host_order:
+        entries = sessions_by_host.get(host, [])
+        arrow = "▸" if host in collapsed else "▾"
+        count = str(len(entries)) + " session" + ("" if len(entries) == 1 else "s")
+        badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
+        badge = tint(label(host), host_colour(host, badge_position))
+        rows.append(("host:" + host, "-", arrow + " " + label(host), count, badge, "group", host, "-"))
+        if host not in collapsed:
+            for _, sid, name, shown, detail, badge, identity in entries:
+                if identity not in favorites:
+                    rows.append((sid, name, "  " + shown, detail, badge, "session", host, identity))
+    name_width = max((len(row[2]) for row in rows), default=0)
+    detail_width = max((len(row[3]) for row in rows), default=0)
+    lines = ["\t".join((sid, name, shown.ljust(name_width) + " ", detail.ljust(detail_width) + " ", badge, kind, host, identity))
+             for sid, name, shown, detail, badge, kind, host, identity in rows]
     return lines, errors
 
 
@@ -333,13 +471,19 @@ def switch_list(*flags):
 def switch_refresh(snapshot):
     """Run by fzf in the background: refresh hosts, and ask fzf to reload only if the list changed."""
     path = Path(snapshot)
+    status_path = path.with_suffix(".status")
     lines, _ = switch_rows(True)
     text = "\n".join(lines) + "\n"
-    if not path.exists() or path.read_text() == text:
+    status = host_status_signature()
+    rows_changed = path.exists() and path.read_text() != text
+    status_changed = not status_path.exists() or status_path.read_text() != status
+    if not rows_changed and not status_changed:
         return
-    temp = path.with_suffix(".tmp")
-    temp.write_text(text)
-    temp.replace(path)
+    if rows_changed:
+        temp = path.with_suffix(".tmp")
+        temp.write_text(text)
+        temp.replace(path)
+    status_path.write_text(status)
     print("reload(cat " + shlex.quote(str(path)) + ")")
 
 
@@ -349,7 +493,8 @@ SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) f
 # Keys whose fzf default edits the query: unbound in normal mode, restored in insert mode.
 SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
 SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
-                      "q": "abort", "i": "enter-insert", "/": "enter-insert"}
+                      "q": "abort", "i": "enter-insert", "/": "enter-insert", "h": "toggle-host", "H": "toggle-hosts",
+                      "f": "toggle-favorite"}
 
 
 def fzf_color(value):
@@ -396,17 +541,29 @@ def switch(client):
         stale.unlink(missing_ok=True)
     snapshot = RUNTIME / ("switch-" + str(os.getpid()) + ".txt")
     snapshot.write_text("\n".join(lines) + "\n")
+    status_snapshot = snapshot.with_suffix(".status")
+    status_snapshot.write_text(host_status_signature())
     refresh_cmd = shlex.join(SELF + ["switch-refresh", str(snapshot)])
     modal = sorted(set(SWITCH_TYPING_KEYS) | set(SWITCH_NORMAL_KEYS))
     edit = ",".join(SWITCH_EDIT_KEYS)
     to_insert = "change-prompt(insert> )+unbind(" + ",".join(modal) + ")+rebind(" + edit + ")"
     to_normal = "change-prompt(normal> )+rebind(" + ",".join(modal) + ")+unbind(" + edit + ")"
+    reload_rows = "reload(" + shlex.join(SELF + ["switch-list"]) + ")"
+    toggle_host = "execute-silent(" + shlex.join(SELF + ["switch-host", "toggle"]) + " {7})+" + reload_rows
+    toggle_hosts = "execute-silent(" + shlex.join(SELF + ["switch-hosts", "toggle"]) + ")+" + reload_rows
+    toggle_favorite = "execute-silent(" + shlex.join(SELF + ["switch-favorite", "toggle"]) + " {6} {8})+" + reload_rows
+    enter = "transform:[ \"$FZF_MATCH_COUNT\" = 0 ] && echo accept || " + shlex.join(SELF + ["switch-enter"]) + " {6} {7}"
     binds = ["start:unbind(" + edit + ")"]
     binds += [key + ":ignore" for key in SWITCH_TYPING_KEYS if key not in SWITCH_NORMAL_KEYS]
-    binds += [key + ":" + (to_insert if action == "enter-insert" else action) for key, action in SWITCH_NORMAL_KEYS.items()]
+    special = {"enter-insert": to_insert, "toggle-host": toggle_host,
+               "toggle-hosts": toggle_hosts, "toggle-favorite": toggle_favorite}
+    binds += [key + ":" + special.get(action, action)
+              for key, action in SWITCH_NORMAL_KEYS.items()]
+    binds.append("enter:" + enter)
     binds.append("esc:transform:[ \"$FZF_PROMPT\" = \"insert> \" ] && echo " + shlex.quote(to_normal) + " || echo abort")
     binds.append("load:bg-transform(" + refresh_cmd + ")+unbind(load)")
-    command = [fzf, "--ansi", "--reverse", "--no-multi", "--cycle", "--info=inline", "--print-query", "--prompt", "normal> ",
+    command = [fzf, "--ansi", "--reverse", "--no-multi", "--cycle", "--info=inline-right",
+               "--info-command", shlex.join(SELF + ["switch-status"]), "--print-query", "--prompt", "normal> ",
                "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1"]
     for bind in binds:
         command += ["--bind", bind]
@@ -417,6 +574,7 @@ def switch(client):
                                 env=dict(os.environ, SHELL="/bin/sh"))
     finally:
         snapshot.unlink(missing_ok=True)
+        status_snapshot.unlink(missing_ok=True)
     output = result.stdout.splitlines()
     query = output[0].strip() if output else ""
     if result.returncode == 0 and len(output) > 1:
@@ -837,7 +995,7 @@ def forget_proxy(name):
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list", "switch-refresh"])
+    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":

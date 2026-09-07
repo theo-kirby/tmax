@@ -56,6 +56,7 @@ fi
 #   set -g @tmax-switch-key    "Space"
 #   set -g @tmax-switch-width  "60%"
 #   set -g @tmax-switch-height "50%"
+#   set -g @tmax-switch-hosts  "on" # remote sessions start shown; H toggles them
 # display-popup does not expand formats in its command (tmux 3.4), so run-shell
 # fills in the client name and opens the popup on that client. The border takes
 # the status bar's background colour (or the default when it has none).
