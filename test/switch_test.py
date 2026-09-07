@@ -39,10 +39,18 @@ binding = t("list-keys", "-T", "prefix", "Space")
 expect("Space opens a popup", "display-popup" in binding and "switch" in binding, True)
 expect("popup border follows status-style", "-S 'fg=#{?#{m/r:bg=,#{status-style}}" in binding, True)
 expect("popup title is white", "-T '#[fg=white] sessions '" in binding, True)
+expect("popup size", "-w '75%'" in binding and "-h '65%'" in binding, True)
+rename_binding = t("list-keys", "-T", "prefix", ",")
+t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
+expect("plugin reload does not rewrap bindings", t("list-keys", "-T", "prefix", ","), rename_binding)
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 os.environ["TMAX_REMOTES_FILE"] = config   # read when the module loads
 os.environ["TMAX_STATE_DIR"] = STATE
 import remote
+expect("preview clips rows and follows bottom", remote.fit_switch_preview("top\n0123456789ABCD\ncurrent\nlast\n\n", 8, 3),
+       "01234567\ncurrent\nlast")
+expect("preview clips wide characters by display width", remote.fit_switch_preview("abcdef界z", 8, 1), "abcdef界")
+expect("preview toggle key", remote.SWITCH_NORMAL_KEYS.get("p"), "toggle-preview")
 expect("host name colours", [remote.tint("x", c).split("m")[0] for c in ["blue", "yellow", "brightred", "colour201", "#ff8800", "12"]],
        ["\x1b[34", "\x1b[33", "\x1b[91", "\x1b[38;5;201", "\x1b[38;2;255;136;0", "\x1b[38;5;12"])
 expect("labels: host entries and the local entry", [list(remote.hosts()), remote.label("local"), remote.label("srv"), remote.label("other")],
@@ -65,6 +73,14 @@ heading = rows[0].split("\t")[2].strip()
 heading_badge = rows[0].split("\t")[4]
 expect("local host heading", [rows[0].split("\t")[5], heading, "this box" in heading_badge and "\x1b[" in heading_badge],
        ["group", "▾ this box", True])
+preview = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"),
+                          "switch-preview", session_rows[0].split("\t")[0], "session", "--once"],
+                         capture_output=True, text=True, env=env).stdout
+expect("selected session preview", ["alpha" in preview, "0:" in preview, "\x1b[2J" in preview], [True, True, True])
+group_preview = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"),
+                                "switch-preview", "host:local", "group", "--once"],
+                               capture_output=True, text=True, env=env).stdout
+expect("host rows show a preview hint", "Select a session" in group_preview, True)
 
 # A cached remote proxy lets us exercise host visibility without contacting SSH.
 t("new-session", "-d", "-s", "srv/omega", "-x", "120", "-y", "40")
@@ -126,6 +142,10 @@ def session(): return t("display-message", "-p", "#{client_session}")
 
 time.sleep(0.8); drain()
 expect("start on alpha", session(), "alpha")
+attached_rows = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
+                               capture_output=True, text=True, env=env).stdout.splitlines()
+attached_alpha = next(row.split("\t")[3].strip() for row in attached_rows if row.split("\t")[1] == "alpha")
+expect("attached session marker", attached_alpha, "1 window (a)")
 
 send("\x02 ", 1.5)
 send("\r", 0.8)

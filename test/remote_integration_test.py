@@ -137,15 +137,19 @@ def main():
             time.sleep(1)
             send(b"printf 'SPLIT_%s\\n' READY\r")
             wait_for(lambda: "SPLIT_READY" in remote("capture-pane", "-p", "-t", "%2"), "new split accepts input on the remote host")
-            # Paused output must not block a hidden remote application.
+            send(b"printf 'HISTORY_%s\\n' KEPT\r")
+            wait_for(lambda: "HISTORY_KEPT" in tmux("capture-pane", "-p", "-S", "-", "-t", proxy), "remote history reaches local proxy")
+            # Hidden panes stay synchronized, so returning does not need a
+            # destructive repaint and their local scrollback remains intact.
             tmux("switch-client", "-t", "local-test")
             time.sleep(2)
             remote("send-keys", "-t", "%2", "printf 'HIDDEN_%s\\n' DONE", "Enter")
             wait_for(lambda: "HIDDEN_DONE" in remote("capture-pane", "-p", "-t", "%2"), "hidden remote application keeps running")
             lp = next(line.split()[0] for line in tmux("list-panes", "-s", "-t", proxy, "-F", "#{pane_id} #{@tmax-remote-pane}").splitlines() if line.endswith(" %2"))
-            assert "HIDDEN_DONE" not in tmux("capture-pane", "-p", "-t", lp)
+            wait_for(lambda: "HIDDEN_DONE" in tmux("capture-pane", "-p", "-t", lp), "hidden output keeps the local proxy current")
             tmux("switch-client", "-t", proxy)
-            wait_for(lambda: "HIDDEN_DONE" in tmux("capture-pane", "-p", "-t", lp), "returning to remote restores current screen")
+            history = tmux("capture-pane", "-p", "-S", "-", "-t", lp)
+            assert "HISTORY_KEPT" in history and "HIDDEN_DONE" in history
             # Detach only clients of the isolated remote test server.
             for client in remote("list-clients", "-F", "#{client_name}").splitlines():
                 remote("detach-client", "-t", client)

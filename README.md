@@ -81,15 +81,16 @@ them.
 
 ## Session switcher
 
-`prefix + Space` opens a popup with an [fzf](https://github.com/junegunn/fzf)
+`prefix + Space` opens a large popup with an [fzf](https://github.com/junegunn/fzf)
 list of every session, local and remote, in the spirit of
 [tmux-fzf](https://github.com/sainnhe/tmux-fzf). It works with the sidebar on
-or off.
+or off. Press `p` to open a preview of the selected session's active window on
+the right half; it refreshes once a second. The preview starts hidden.
 
 ```
 ╭─ sessions ─────────────────────────────────╮
 │ normal>                             11/11  │
-│  ★ work  2 windows (attached)   laptop     │
+│  ★ work  2 windows (a)          laptop     │
 │▌ ▾ laptop              2 sessions  laptop │
 │    notes 2 windows              laptop     │
 │  ▸ desk pc             1 session   desk pc│
@@ -132,6 +133,7 @@ back to normal mode with the filter kept.
 | normal | `h`               | collapse / expand the current session's host |
 | normal | `H`               | hide / show all remote hosts                  |
 | normal | `f`               | star / unstar the current session             |
+| normal | `p`               | show / hide the session preview               |
 | normal | `i` `/`           | insert mode                                  |
 | normal | `Enter`           | go to the session                            |
 | normal | `q` `Esc`         | close                                        |
@@ -178,8 +180,8 @@ Options, in `~/.tmux.conf` before the `run-shell` line:
 
 ```tmux
 set -g @tmax-switch-key    "Space"  # prefix + key
-set -g @tmax-switch-width  "60%"    # popup size, columns or percent
-set -g @tmax-switch-height "50%"
+set -g @tmax-switch-width  "75%"    # popup size, columns or percent
+set -g @tmax-switch-height "65%"
 set -g @tmax-switch-hosts  "on"     # show remote-host sessions initially
 ```
 
@@ -239,12 +241,12 @@ prompt are **not** translated; use the routed keys for remote creation and
 deletion. Deleting a proxy through a direct local tmux command only removes
 the local copy, and the synchroniser may recreate it.
 
-Hidden panes pause their output subscriptions without blocking the remote
-programs; returning to a window restores its current screen. Metadata
-refreshes every 10 seconds while the sidebar is open, and opened sessions
-reconcile their windows and panes every 5 seconds while attached (15 seconds
-while detached). Connections retry after interruption; keystrokes typed while
-disconnected are discarded. If a host runs tmax itself, its own proxy
+Hidden panes keep their output subscriptions active so their local screen and
+scrollback remain intact when you return, without blocking remote programs.
+Metadata refreshes every 10 seconds while the sidebar is open, and opened
+sessions reconcile their windows and panes every 5 seconds while attached (15
+seconds while detached). Connections retry after interruption; keystrokes
+typed while disconnected are discarded. If a host runs tmax itself, its own proxy
 sessions (for example the ones it holds for this machine) are skipped, so
 nothing shows up twice.
 
@@ -365,8 +367,8 @@ Put these in `~/.tmux.conf` **before** the `run-shell` line. Defaults shown.
 ```tmux
 # switcher
 set -g @tmax-switch-key    "Space"
-set -g @tmax-switch-width  "60%"
-set -g @tmax-switch-height "50%"
+set -g @tmax-switch-width  "75%"
+set -g @tmax-switch-height "65%"
 set -g @tmax-switch-hosts  "on"     # H toggles all remote-host sessions
 
 # sidebar

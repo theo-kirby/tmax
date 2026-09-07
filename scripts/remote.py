@@ -17,6 +17,7 @@ import sys
 import termios
 import time
 import tty
+import unicodedata
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = Path(os.environ.get("TMAX_STATE_DIR", Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "tmax"))
@@ -268,7 +269,7 @@ def tree(client, pane):
         # Session lines are named host/name already; keep the text short and stock-like.
         local("choose-tree", "-Zs", "-t", pane, "-F",
               "#{?pane_format,#{pane_current_command},#{?window_format,#{window_name}#{window_flags},"
-              "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}} windows#{?session_attached, (attached),}}}")
+              "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}} windows#{?session_attached, (a),}}}")
     if errors:
         local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
 
@@ -407,6 +408,66 @@ def switch_status():
     print("  ".join(marks + ([info] if info else [])))
 
 
+PREVIEW_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def clip_switch_preview_line(line, columns):
+    """Clip one ANSI-coloured terminal row without allowing it to reflow."""
+    output, width, position = "", 0, 0
+    while position < len(line):
+        match = PREVIEW_ESCAPE.match(line, position)
+        if match:
+            output += match.group(0)
+            position = match.end()
+            continue
+        char = line[position]
+        char_width = 0 if unicodedata.combining(char) else (2 if unicodedata.east_asian_width(char) in "WF" else 1)
+        if width + char_width > columns:
+            break
+        output += char
+        width += char_width
+        position += 1
+    return output + ("\x1b[0m" if "\x1b" in output else "")
+
+
+def fit_switch_preview(frame, columns, rows):
+    """Keep the bottom of a terminal capture and clip it to the preview viewport."""
+    source = frame.splitlines()
+    while source and not PREVIEW_ESCAPE.sub("", source[-1]).strip():
+        source.pop()
+    return "\n".join(clip_switch_preview_line(line, columns) for line in source[-rows:])
+
+
+def switch_preview(sid, kind, *flags):
+    """Continuously render the selected session's active pane for fzf's preview area."""
+    if kind != "session":
+        print("Select a session to preview its active window.")
+        return
+    once = "--once" in flags
+    while True:
+        columns = max(1, int(os.environ.get("FZF_PREVIEW_COLUMNS", "80")))
+        rows = max(1, int(os.environ.get("FZF_PREVIEW_LINES", "24")) - 2)
+        info = local("display-message", "-p", "-t", sid + ":",
+                     "#{session_name}\t#{window_index}\t#{window_name}\t#{window_panes}", check=False)
+        if not info:
+            title, frame = "Session is no longer available", ""
+        else:
+            session, index, window, panes = info.split("\t", 3)
+            title = session + "  ·  " + index + ": " + window
+            if panes != "1":
+                title += "  ·  " + panes + " panes"
+            frame = local("capture-pane", "-p", "-e", "-t", sid + ":", check=False)
+            frame = fit_switch_preview(frame, columns, rows)
+        title = clip_switch_preview_line(title, columns)
+        # Home + clear makes the long-running preview update in place. fzf stops
+        # this process whenever selection changes or the popup closes.
+        sys.stdout.write("\x1b[H\x1b[2J\x1b[1m" + title + "\x1b[0m\n\n" + frame + "\n")
+        sys.stdout.flush()
+        if once:
+            return
+        time.sleep(1)
+
+
 def host_status_signature():
     return json.dumps(host_statuses(), separators=(",", ":"))
 
@@ -430,7 +491,7 @@ def switch_rows(refresh_hosts=False):
             continue
         host = host or "local"
         shown = title or (name[len(host) + 1:] if host != "local" and name.startswith(host + "/") else name)
-        detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (attached)" if attached != "0" else "")
+        detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (a)" if attached != "0" else "")
         badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
         badge = tint(label(host), host_colour(host, badge_position))
         identity = ("local:" + name) if host == "local" else ("remote:" + host + ":" + shown)
@@ -494,7 +555,7 @@ SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) f
 SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
 SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
                       "q": "abort", "i": "enter-insert", "/": "enter-insert", "h": "toggle-host", "H": "toggle-hosts",
-                      "f": "toggle-favorite"}
+                      "f": "toggle-favorite", "p": "toggle-preview"}
 
 
 def fzf_color(value):
@@ -562,9 +623,11 @@ def switch(client):
     binds.append("enter:" + enter)
     binds.append("esc:transform:[ \"$FZF_PROMPT\" = \"insert> \" ] && echo " + shlex.quote(to_normal) + " || echo abort")
     binds.append("load:bg-transform(" + refresh_cmd + ")+unbind(load)")
+    preview = shlex.join(SELF + ["switch-preview"]) + " {1} {6}"
     command = [fzf, "--ansi", "--reverse", "--no-multi", "--cycle", "--info=inline-right",
                "--info-command", shlex.join(SELF + ["switch-status"]), "--print-query", "--prompt", "normal> ",
-               "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1"]
+               "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1",
+               "--preview", preview, "--preview-window", "right,50%,border-left,hidden,nowrap"]
     for bind in binds:
         command += ["--bind", bind]
     # No gutter bar: fzf would otherwise draw a bar in every row's first column in the highlight colour.
@@ -830,6 +893,11 @@ def view(host, sid, rp):
                 for pane in control.call("list-panes", "-s", "-t", sid, "-F", "#{pane_id}").decode().splitlines():
                     control.call("refresh-client", "-A", pane + ":pause")
                 control.call("refresh-client", "-f", "!no-output")
+                # Keep this pane's terminal emulator synchronized even while its
+                # local window is hidden. Repainting on every return clears the
+                # local screen and corrupts its independently accumulated history.
+                control.call("refresh-client", "-A", rp + ":continue")
+                repaint(control, rp)
                 visible, size, last_check = False, None, 0
                 while True:
                     if control.topology_changed:
@@ -847,11 +915,7 @@ def view(host, sid, rp):
                         width -= sum(int(extra) + 1 for extra in extras if extra.isdigit())
                         width = max(1, width)
                         showing = bool(attached and active and (not zoomed or pane_active))
-                        if showing != visible:
-                            control.call("refresh-client", "-A", rp + (":continue" if showing else ":pause"))
-                            if showing:
-                                repaint(control, rp)
-                            visible = showing
+                        visible = showing
                         # Normal tmux client sizing; other attached clients retain their say.
                         if visible and (width, height) != size:
                             control.call("refresh-client", "-f", "!ignore-size")
@@ -935,6 +999,11 @@ def install():
             tokens = shlex.split(original)
         except ValueError:
             continue
+        # Reloading tmax must not wrap one of its own conditional bindings
+        # again. This is especially important for the rename binding because
+        # its popup command still contains the word "rename-window".
+        if str(Path(__file__).resolve()) in original:
+            continue
         remote = None
         if tokens and tokens[0] in direct and all(token not in tokens for token in [";", "{", "}"]):
             remote = "run-shell -b " + control_quote(shlex.join(SELF + ["action", "#{pane_id}", *tokens]))
@@ -995,7 +1064,7 @@ def forget_proxy(name):
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status"])
+    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":
