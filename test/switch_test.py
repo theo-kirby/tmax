@@ -33,8 +33,8 @@ t("set-environment", "-g", "TMAX_STATE_DIR", STATE)
 config = os.path.join(STATE, "remotes.json")
 with open(config, "w") as f: f.write('{"local": {"label": "this box"}, "srv": {"destination": "nowhere.invalid", "label": "big server"}}')
 t("set-environment", "-g", "TMAX_REMOTES_FILE", config)
-t("set-option", "-g", "@tmax-sidebar", "off")
 t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
+expect("s opens the stock local tree", t("list-keys", "-T", "prefix", "s").split(" s ", 1)[-1], "choose-tree -Zs")
 binding = t("list-keys", "-T", "prefix", "Space")
 expect("Space opens a popup", "display-popup" in binding and "switch" in binding, True)
 expect("popup border follows status-style", "-S 'fg=#{?#{m/r:bg=,#{status-style}}" in binding, True)
@@ -62,13 +62,14 @@ expect("fzf colour names", [remote.fzf_color(c) for c in ["green", "colour235", 
 env = dict(os.environ, TMUX=t("display-message", "-p", "#{socket_path}") + ",0,0")
 status = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-status"],
                         capture_output=True, text=True, env=dict(env, FZF_INFO="3/3")).stdout
-expect("top-right host status", ["big server" in status, "◌" in status, status.rstrip().endswith("3/3")], [True, True, True])
+expect("locked hosts start without unattended SSH", remote.auth.read_lease(remote.RUNTIME, "srv", remote.hosts()["srv"]), {})
+expect("top-right host status", ["big server" in status, "\x1b[33m●" in status, status.rstrip().endswith("3/3")], [True, True, True])
 rows = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
                       capture_output=True, text=True, env=env).stdout.splitlines()
 session_rows = [r for r in rows if r.split("\t")[5] == "session"]
 expect("switch-list names", [r.split("\t")[1] for r in session_rows], ["alpha", "beta", "gamma"])
 fields = session_rows[1].split("\t")
-expect("switch-list beta label", [fields[2].strip(), fields[3].strip(), "this box" in fields[4] and "\x1b[" in fields[4]], ["beta", "2 windows", True])
+expect("switch-list beta label", [fields[2].strip(), fields[3].strip(), "this box" in fields[4] and "\x1b[" in fields[4]], ["beta", remote.activity_dots(["plain", "plain"]), True])
 heading = rows[0].split("\t")[2].strip()
 heading_badge = rows[0].split("\t")[4]
 expect("local host heading", [rows[0].split("\t")[5], heading, "this box" in heading_badge and "\x1b[" in heading_badge],
@@ -82,6 +83,9 @@ group_preview = subprocess.run([sys.executable, os.path.join(HERE, "..", "script
                                capture_output=True, text=True, env=env).stdout
 expect("host rows show a preview hint", "Select a session" in group_preview, True)
 
+unlock_action = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"),
+                                "switch-enter", "group", "srv"], capture_output=True, text=True, env=env).stdout
+expect("locked host Enter requests interactive unlock", "execute(" in unlock_action and "unlock srv" in unlock_action, True)
 # A cached remote proxy lets us exercise host visibility without contacting SSH.
 t("new-session", "-d", "-s", "srv/omega", "-x", "120", "-y", "40")
 t("set-option", "-t", "srv/omega", "@tmax-remote-host", "srv")
@@ -145,7 +149,7 @@ expect("start on alpha", session(), "alpha")
 attached_rows = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
                                capture_output=True, text=True, env=env).stdout.splitlines()
 attached_alpha = next(row.split("\t")[3].strip() for row in attached_rows if row.split("\t")[1] == "alpha")
-expect("attached session marker", attached_alpha, "1 window (a)")
+expect("attached session has one window dot", attached_alpha, remote.activity_dots(["plain"]))
 
 send("\x02 ", 1.5)
 send("\r", 0.8)

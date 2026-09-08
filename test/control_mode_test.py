@@ -1,7 +1,7 @@
 """Isolated feasibility probe: python3 test/control_mode_test.py.
 
 Uses a fresh tmux socket, never the user's server. This tests the protocol,
-not a completed terminal bridge or sidebar integration.
+not a completed terminal bridge or popup integration.
 """
 import argparse
 import os

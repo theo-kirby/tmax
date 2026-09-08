@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """SSH discovery and control-mode proxy panes. Requires Python 3.9+ locally."""
 import argparse
+import auth
+import agent_status
 import contextlib
 import fcntl
 import hashlib
@@ -63,18 +65,11 @@ def local(*args, check=True):
 
 def ssh(host, *args):
     cfg = hosts()[host]
-    master = cfg.get("control_path")
-    command = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2"]
-    if master:
-        command += ["-S", os.path.expanduser(master), "-o", "ProxyCommand=false"]
-    else:
-        command += ["-o", "ControlMaster=auto", "-o", "ControlPersist=120",
-                    "-o", "ControlPath=" + str(RUNTIME / (key(host) + ".ssh"))]
+    command = auth.command(RUNTIME, host, cfg)
     remote = [cfg.get("tmux", "tmux")]
     if cfg.get("socket"):
         remote += ["-L", cfg["socket"]]
-    return command + [cfg["destination"], shlex.join(remote + list(args))]
+    return command + [shlex.join(remote + list(args))]
 
 
 def fetch(host, *args):
@@ -123,12 +118,22 @@ def refresh(host):
                     continue
                 if re.fullmatch(r"\$\d+", sid):
                     data["sessions"].append([sid, clean(name), int(count)])
+            if data["sessions"]:
+                cfg = hosts()[host]
+                args = ["snapshot", "--tmux", cfg.get("tmux", "tmux")]
+                if cfg.get("socket"):
+                    args += ["--socket", cfg["socket"]]
+                command = 'python3 "$HOME/.local/share/tmax/agent_status.py" ' + shlex.join(args)
+                result = subprocess.run(auth.command(RUNTIME, host, cfg) + [command],
+                                        capture_output=True, text=True, timeout=12)
+                if result.returncode == 0:
+                    data["activity"] = json.loads(result.stdout)
         except Exception as exc:
             message = str(exc)
             if missing_session(message):
                 pass
             else:
-                data["status"] = "auth required" if any(s in message for s in ["Permission denied", "Host key verification", "ProxyCommand"]) else "offline"
+                data["status"] = "locked" if isinstance(exc, auth.Locked) else "offline"
                 data["error"] = message
                 if path.exists():
                     with contextlib.suppress(ValueError, OSError):
@@ -136,22 +141,6 @@ def refresh(host):
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(data))
         temp.replace(path)
-
-
-def rows():
-    for host in hosts():
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", host):
-            continue
-        path = RUNTIME / (key(host) + ".json")
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            data = {"time": 0, "status": "connecting", "sessions": []}
-        if time.time() - data["time"] > (10 if data["status"] == "online" else 30):
-            spawn("refresh", host)
-        print("H\t" + host + "\t" + data["status"] + "\t")
-        for sid, name, count in data["sessions"]:
-            print("R\t" + name + "\t" + str(count) + "w\t" + sid)
 
 
 def proxy_key(host, sid):
@@ -196,7 +185,6 @@ def prepare(host, sid, epoch, title):
             local("set-option", "-t", name, "@tmax-remote-host", host)
             local("set-option", "-t", name, "@tmax-remote-session", sid)
             local("set-option", "-t", name, "@tmax-remote-epoch", epoch)
-            local("set-option", "-t", name, "@tmax-sidebar-overview", "off")
             local("set-option", "-t", name, "renumber-windows", "off")
         elif local("show-options", "-qv", "-t", name, "@tmax-remote-epoch") != epoch:
             raise RuntimeError("remote session was replaced; close its old local proxy first")
@@ -257,21 +245,6 @@ def discover():
             if owner == host and sid not in current_ids:
                 forget_proxy(name)
     return errors
-
-
-def tree(client, pane):
-    local("display-message", "-c", client, "Refreshing sessions…", check=False)
-    errors = discover()
-    # Do not open a chooser over unrelated work if its invoking client moved meanwhile.
-    clients = dict(line.split("\t", 1) for line in local("list-clients", "-F", "#{client_name}\t#{session_id}", check=False).splitlines())
-    current = local("display-message", "-p", "-t", clients[client], "#{pane_id}", check=False) if client in clients else None
-    if current == pane:
-        # Session lines are named host/name already; keep the text short and stock-like.
-        local("choose-tree", "-Zs", "-t", pane, "-F",
-              "#{?pane_format,#{pane_current_command},#{?window_format,#{window_name}#{window_flags},"
-              "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}} windows#{?session_attached, (a),}}}")
-    if errors:
-        local("display-message", "-c", client, "tmax: " + "; ".join(errors), check=False)
 
 
 # Host name colours: terminal colours, local first, then remote hosts in remotes.json order. A "colour" per entry overrides.
@@ -373,9 +346,12 @@ def switch_favorite(mode, kind, identity):
 
 def switch_enter(kind, host):
     """fzf transform action: group rows fold; session rows are accepted."""
-    if kind == "group":
+    if host != "local" and host in hosts() and not auth.live(auth.read_lease(RUNTIME, host, hosts()[host])):
+        print("execute(" + shlex.join(SELF + ["unlock", host]) + ")+reload-sync(" +
+              shlex.join(SELF + ["switch-list", "--refresh"]) + ")")
+    elif kind == "group":
         switch_host("toggle", host)
-        print("reload(" + shlex.join(SELF + ["switch-list"]) + ")")
+        print("reload-sync(" + shlex.join(SELF + ["switch-list"]) + ")")
     else:
         print("accept")
 
@@ -384,6 +360,9 @@ def host_statuses():
     """Configured remote hosts and their most recently refreshed status."""
     result = []
     for host in hosts():
+        if not auth.live(auth.read_lease(RUNTIME, host, hosts()[host])):
+            result.append((host, "locked"))
+            continue
         try:
             status = json.loads((RUNTIME / (key(host) + ".json")).read_text()).get("status", "connecting")
         except (OSError, ValueError):
@@ -401,6 +380,8 @@ def switch_status():
             mark = tint("●", "green")
         elif status == "connecting":
             mark = tint("◌", "yellow")
+        elif status == "locked":
+            mark = tint("●", "yellow")
         else:
             mark = tint("○", "brightblack")
         marks.append(mark + " " + label(host))
@@ -472,6 +453,45 @@ def host_status_signature():
     return json.dumps(host_statuses(), separators=(",", ":"))
 
 
+
+DOT_COLOURS = {"plain": "brightwhite", "working": "brightgreen", "waiting": "brightyellow"}
+
+
+def activity_dots(states):
+    return " ".join(tint("●", DOT_COLOURS.get(state, "white")) for state in states)
+
+
+def activity_snapshot():
+    try:
+        return agent_status.snapshot()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+
+
+def remote_activity():
+    result = {}
+    for host, cfg in hosts().items():
+        if not auth.live(auth.read_lease(RUNTIME, host, cfg)):
+            continue
+        try:
+            data = json.loads((RUNTIME / (key(host) + ".json")).read_text())
+            if data.get("status") == "online":
+                result[host] = data.get("activity", {})
+        except (OSError, ValueError):
+            pass
+    return result
+
+
+def visible_width(text):
+    text = PREVIEW_ESCAPE.sub("", text)
+    return sum(0 if unicodedata.combining(c) else
+               2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def pad_visible(text, width):
+    return text + " " * max(0, width - visible_width(text))
+
+
 def switch_rows(refresh_hosts=False):
     """Lines for the grouped fzf switcher.
 
@@ -484,14 +504,22 @@ def switch_rows(refresh_hosts=False):
     state = switch_state()
     collapsed, favorites = set(state["collapsed"]), set(state["favorites"])
     sessions_by_host = {"local": []}
+    local_activity, cached_activity = activity_snapshot(), remote_activity()
+    session_states = {}
     for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t#{@tmax-remote-name}\t"
-                      "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}}\t#{session_attached}", check=False).splitlines():
-        sid, name, host, title, count, attached = line.split("\t", 5)
+                      "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}}\t#{@tmax-remote-session}", check=False).splitlines():
+        sid, name, host, title, count, remote_sid = line.split("\t", 5)
         if host and not show_hosts:
             continue
         host = host or "local"
         shown = title or (name[len(host) + 1:] if host != "local" and name.startswith(host + "/") else name)
-        detail = (count or "?") + " window" + ("" if count == "1" else "s") + (" (a)" if attached != "0" else "")
+        states = (local_activity.get(sid) if host == "local" else
+                  cached_activity.get(host, {}).get(remote_sid))
+        if states is None:
+            states = ["plain"] * (int(count) if count.isdigit() else 1)
+        states = [state if state in DOT_COLOURS else "plain" for state in states]
+        session_states[sid] = agent_status.strongest(states)
+        detail = activity_dots(states)
         badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
         badge = tint(label(host), host_colour(host, badge_position))
         identity = ("local:" + name) if host == "local" else ("remote:" + host + ":" + shown)
@@ -499,7 +527,7 @@ def switch_rows(refresh_hosts=False):
     for entries in sessions_by_host.values():
         entries.sort()
 
-    host_order = ["local"] + [host for host in hosts() if show_hosts and host in sessions_by_host]
+    host_order = ["local"] + (list(hosts()) if show_hosts else [])
     rows = []
     # Favorites are real session rows, moved out of their normal host group.
     for host in host_order:
@@ -509,7 +537,9 @@ def switch_rows(refresh_hosts=False):
     for host in host_order:
         entries = sessions_by_host.get(host, [])
         arrow = "▸" if host in collapsed else "▾"
-        count = str(len(entries)) + " session" + ("" if len(entries) == 1 else "s")
+        count = activity_dots([session_states[entry[1]] for entry in entries])
+        if host != "local" and not auth.live(auth.read_lease(RUNTIME, host, hosts()[host])):
+            count = "locked"
         badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
         badge = tint(label(host), host_colour(host, badge_position))
         rows.append(("host:" + host, "-", arrow + " " + label(host), count, badge, "group", host, "-"))
@@ -517,35 +547,50 @@ def switch_rows(refresh_hosts=False):
             for _, sid, name, shown, detail, badge, identity in entries:
                 if identity not in favorites:
                     rows.append((sid, name, "  " + shown, detail, badge, "session", host, identity))
-    name_width = max((len(row[2]) for row in rows), default=0)
-    detail_width = max((len(row[3]) for row in rows), default=0)
-    lines = ["\t".join((sid, name, shown.ljust(name_width) + " ", detail.ljust(detail_width) + " ", badge, kind, host, identity))
+    name_width = max((visible_width(row[2]) for row in rows), default=0)
+    detail_width = max((visible_width(row[3]) for row in rows), default=0)
+    lines = ["\t".join((sid, name, pad_visible(shown, name_width) + " ", pad_visible(detail, detail_width) + " ", badge, kind, host, identity))
              for sid, name, shown, detail, badge, kind, host, identity in rows]
     return lines, errors
 
 
 def switch_list(*flags):
     lines, _ = switch_rows("--refresh" in flags)
-    print("\n".join(lines))
+    text = "\n".join(lines) + "\n"
+    snapshot = os.environ.get("TMAX_SWITCH_SNAPSHOT")
+    if snapshot and Path(snapshot).exists():
+        path = Path(snapshot)
+        temporary = path.with_suffix("." + str(os.getpid()) + ".tmp")
+        temporary.write_text(text)
+        temporary.replace(path)
+    print(text, end="")
 
 
-def switch_refresh(snapshot):
-    """Run by fzf in the background: refresh hosts, and ask fzf to reload only if the list changed."""
+def switch_refresh(snapshot, *flags):
+    """Poll when the user pauses; never rearrange rows during active navigation."""
+    if "--initial" not in flags and int(os.environ.get("FZF_IDLE_TIME_MS", "1000")) < 1000:
+        return
+    settings_before = (switch_state(), switch_hosts_visible())
     path = Path(snapshot)
+    if not path.exists():
+        return
     status_path = path.with_suffix(".status")
     lines, _ = switch_rows(True)
     text = "\n".join(lines) + "\n"
+    if settings_before != (switch_state(), switch_hosts_visible()):
+        return
     status = host_status_signature()
     rows_changed = path.exists() and path.read_text() != text
     status_changed = not status_path.exists() or status_path.read_text() != status
-    if not rows_changed and not status_changed:
-        return
     if rows_changed:
-        temp = path.with_suffix(".tmp")
+        temp = path.with_suffix("." + str(os.getpid()) + ".tmp")
         temp.write_text(text)
         temp.replace(path)
     status_path.write_text(status)
-    print("reload(cat " + shlex.quote(str(path)) + ")")
+    if path.exists():
+        if rows_changed or status_changed:
+            print("reload-sync(cat " + shlex.quote(str(path)) + ")")
+
 
 
 # Keys that only type text: ignored in normal mode, released in insert mode.
@@ -555,7 +600,7 @@ SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) f
 SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
 SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
                       "q": "abort", "i": "enter-insert", "/": "enter-insert", "h": "toggle-host", "H": "toggle-hosts",
-                      "f": "toggle-favorite", "p": "toggle-preview"}
+                      "f": "toggle-favorite", "p": "toggle-preview", "L": "lock-host"}
 
 
 def fzf_color(value):
@@ -574,11 +619,12 @@ def fzf_color(value):
 def switch_colors():
     """fzf --color entries that paint the current line like the tmux status bar, in one colour."""
     style = dict(part.split("=", 1) for part in local("display-message", "-p", "#{status-style}", check=False).split(",") if "=" in part)
-    bg, fg = fzf_color(style.get("bg", "")), fzf_color(style.get("fg", ""))
-    # "strip" drops the items' own ANSI colours on the current line, so the host name turns plain there.
-    colors = ["fg+:" + (fg or "-1") + ":strip"]
+    bg = fzf_color(style.get("bg", ""))
+    # Strip the selected host badge's ANSI colour. The name/dot fields
+    # selected by --nth clear strip, preserving the activity colours.
+    colors = ["fg+:black:regular:strip", "nth:regular"]
     if bg:
-        colors += ["bg+:" + bg, "hl:" + bg, "pointer:" + bg, "prompt:" + bg, "hl+:" + (fg or "-1") + ":underline"]
+        colors += ["bg+:" + bg, "hl:" + bg, "pointer:" + bg, "prompt:" + bg, "hl+:black:underline"]
     return colors
 
 
@@ -592,6 +638,10 @@ def switch(client):
     fzf = shutil.which("fzf") or next((p for p in ["/opt/homebrew/bin/fzf", "/usr/local/bin/fzf"] if os.path.exists(p)), None)
     if not fzf:
         local("display-message", "-c", client, "tmax: fzf not found (brew install fzf)", check=False)
+        return
+    version = subprocess.check_output([fzf, "--version"], text=True).split()[0]
+    if tuple(int(part) for part in version.split(".")[:3]) < (0, 74, 3):
+        local("display-message", "-c", client, "tmax: update fzf to 0.74.3+ for live activity dots", check=False)
         return
     lines, _ = switch_rows()
     for stale in RUNTIME.glob("switch-*.txt"):
@@ -609,32 +659,38 @@ def switch(client):
     edit = ",".join(SWITCH_EDIT_KEYS)
     to_insert = "change-prompt(insert> )+unbind(" + ",".join(modal) + ")+rebind(" + edit + ")"
     to_normal = "change-prompt(normal> )+rebind(" + ",".join(modal) + ")+unbind(" + edit + ")"
-    reload_rows = "reload(" + shlex.join(SELF + ["switch-list"]) + ")"
+    reload_rows = "reload-sync(" + shlex.join(SELF + ["switch-list"]) + ")"
     toggle_host = "execute-silent(" + shlex.join(SELF + ["switch-host", "toggle"]) + " {7})+" + reload_rows
     toggle_hosts = "execute-silent(" + shlex.join(SELF + ["switch-hosts", "toggle"]) + ")+" + reload_rows
     toggle_favorite = "execute-silent(" + shlex.join(SELF + ["switch-favorite", "toggle"]) + " {6} {8})+" + reload_rows
     enter = "transform:[ \"$FZF_MATCH_COUNT\" = 0 ] && echo accept || " + shlex.join(SELF + ["switch-enter"]) + " {6} {7}"
     binds = ["start:unbind(" + edit + ")"]
     binds += [key + ":ignore" for key in SWITCH_TYPING_KEYS if key not in SWITCH_NORMAL_KEYS]
+    lock_host = "execute-silent(" + shlex.join(SELF + ["lock"]) + " {7})+" + reload_rows
     special = {"enter-insert": to_insert, "toggle-host": toggle_host,
-               "toggle-hosts": toggle_hosts, "toggle-favorite": toggle_favorite}
+               "toggle-hosts": toggle_hosts, "toggle-favorite": toggle_favorite, "lock-host": lock_host}
     binds += [key + ":" + special.get(action, action)
               for key, action in SWITCH_NORMAL_KEYS.items()]
     binds.append("enter:" + enter)
     binds.append("esc:transform:[ \"$FZF_PROMPT\" = \"insert> \" ] && echo " + shlex.quote(to_normal) + " || echo abort")
-    binds.append("load:bg-transform(" + refresh_cmd + ")+unbind(load)")
+    binds.append("load:bg-transform(" + refresh_cmd + " --initial)+unbind(load)")
+    binds.append("every(2):bg-transform(" + refresh_cmd + ")")
     preview = shlex.join(SELF + ["switch-preview"]) + " {1} {6}"
     command = [fzf, "--ansi", "--reverse", "--no-multi", "--cycle", "--info=inline-right",
                "--info-command", shlex.join(SELF + ["switch-status"]), "--print-query", "--prompt", "normal> ",
-               "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1", "--tabstop", "1", "--track", "--id-nth", "1",
+               "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1,2", "--tabstop", "1", "--track", "--id-nth", "1",
                "--preview", preview, "--preview-window", "right,50%,border-left,hidden,nowrap"]
     for bind in binds:
         command += ["--bind", bind]
     # No gutter bar: fzf would otherwise draw a bar in every row's first column in the highlight colour.
     command += ["--gutter", " ", "--color", ",".join(["gutter:-1"] + switch_colors())]
+    popup_env = dict(os.environ, SHELL="/bin/sh", TMAX_SWITCH_SNAPSHOT=str(snapshot))
+    # These colours convey state, including in terminals launched from a
+    # non-colour automation environment.
+    popup_env.pop("NO_COLOR", None)
     try:
         result = subprocess.run(command, input="\n".join(lines) + "\n", capture_output=True, text=True,
-                                env=dict(os.environ, SHELL="/bin/sh"))
+                                env=popup_env)
     finally:
         snapshot.unlink(missing_ok=True)
         status_snapshot.unlink(missing_ok=True)
@@ -652,9 +708,6 @@ def switch(client):
     else:
         return
     local("switch-client", "-c", client, "-t", sid, check=False)
-    # With the sidebar off, the client-session-changed hook connects remote sessions; otherwise do it here.
-    if local("show-options", "-gqv", "@tmax-sidebar", check=False) != "off":
-        activate(name)
 
 
 def layout_translate(layout, mapping):
@@ -673,8 +726,6 @@ def sync(host, sid):
     name = proxy_session(host, sid)
     if name is None:
         raise RuntimeError("no local session for " + host + " " + sid)
-    side = local("show-options", "-gqv", "@tmax-sidebar-pane")
-    focused_side = bool(side and local("display-message", "-p", "-t", name, "#{pane_id}") == side)
     fmt = "#{window_id}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{pane_id}\t#{pane_active}\t#{window_active}\t#{pid}:#{session_created}\t#{window_zoomed_flag}\t#{session_name}"
     records = [line.split("\t") for line in fetch(host, "list-panes", "-s", "-t", sid, "-F", fmt).splitlines()]
     if records and records[0][7] != local("show-options", "-qv", "-t", name, "@tmax-remote-epoch"):
@@ -724,12 +775,8 @@ def sync(host, sid):
                 del panes[old_rp]
         previous = local("show-options", "-wqv", "-t", lw, "@tmax-remote-layout")
         if changed or previous != data["layout"]:
-            # Sidebar is a local-only pane, so defer remote layout adoption while open.
-            side = local("show-options", "-gqv", "@tmax-sidebar-pane")
-            in_window = local("list-panes", "-t", lw, "-F", "#{pane_id}").splitlines()
-            if side not in in_window:
-                local("select-layout", "-t", lw, layout_translate(data["layout"], mapping))
-                local("set-option", "-w", "-t", lw, "@tmax-remote-layout", data["layout"])
+            local("select-layout", "-t", lw, layout_translate(data["layout"], mapping))
+            local("set-option", "-w", "-t", lw, "@tmax-remote-layout", data["layout"])
         local("rename-window", "-t", lw, data["title"])
         if changed and data["active"] == "1":
             local("select-window", "-t", lw)
@@ -747,14 +794,7 @@ def sync(host, sid):
         for line in local("list-windows", "-t", name, "-F", "#{window_id}\t#{@tmax-connecting}").splitlines():
             lw, connecting = line.split("\t")
             if connecting == "1":
-                side = local("show-options", "-gqv", "@tmax-sidebar-pane")
-                if side and side in local("list-panes", "-t", lw, "-F", "#{pane_id}").splitlines():
-                    target = next(line for line in local("list-windows", "-t", name, "-F", "#{?@tmax-remote-window,#{window_id},}").splitlines() if line)
-                    width = local("show-options", "-gqv", "@tmax-sidebar-width") or "28"
-                    local("join-pane", "-d", "-fhb", "-l", width, "-s", side, "-t", target)
                 local("kill-window", "-t", lw)
-    if focused_side:
-        local("select-pane", "-t", side, check=False)
 
 
 def watch(host, sid):
@@ -873,6 +913,7 @@ def view(host, sid, rp):
     lp = os.environ["TMUX_PANE"]
     saved = termios.tcgetattr(0)
     control = None
+    last_error = None
     path = pane_socket(lp)
     with contextlib.suppress(FileNotFoundError):
         path.unlink()
@@ -898,6 +939,7 @@ def view(host, sid, rp):
                 # local screen and corrupts its independently accumulated history.
                 control.call("refresh-client", "-A", rp + ":continue")
                 repaint(control, rp)
+                last_error = None
                 visible, size, last_check = False, None, 0
                 while True:
                     if control.topology_changed:
@@ -953,7 +995,12 @@ def view(host, sid, rp):
                             except RuntimeError as exc:
                                 conn.sendall(str(exc).encode() + b"\n")
             except (ConnectionError, TimeoutError, RuntimeError, OSError) as exc:
-                os.write(1, ("\033[0m\033[?25h\r\n[tmax: " + clean(str(exc)) + "; reconnecting in 5s]\r\n").encode())
+                message = clean(str(exc))
+                if not isinstance(exc, auth.Locked):
+                    message += "; retrying in 5s"
+                if message != last_error:
+                    os.write(1, ("\033[0m\033[?25h\r\n[tmax: " + message + "]\r\n").encode())
+                    last_error = message
                 # Input typed while disconnected is deliberately discarded.
                 until = time.monotonic() + 5
                 while time.monotonic() < until:
@@ -1024,36 +1071,10 @@ def prompt(lp, operation):
         action(lp, [operation, name])
 
 
-def create(host, name):
-    sid = fetch(host, "new-session", "-d", "-s", name, "-P", "-F", "#{session_id}")
-    refresh(host)
-    attach(host, sid)
-
-
-def rename(host, sid, name):
-    fetch(host, "rename-session", "-t", sid, name)
-    current = proxy_session(host, sid)
-    if current:
-        local("rename-session", "-t", current, display_name(host, clean(name)), check=False)
-    refresh(host)
-
-
-def remove(host, sid):
-    fetch(host, "kill-session", "-t", sid)
-    current = proxy_session(host, sid)
-    if current:
-        forget_proxy(current)
-    refresh(host)
-
-
 def forget_proxy(name):
     sessions = local("list-sessions", "-F", "#{?@tmax-remote-host,,#{session_name}}", check=False).splitlines()
     fallback = next((session for session in sessions if session and session != name), None)
     if fallback:
-        side = local("show-options", "-gqv", "@tmax-sidebar-pane", check=False)
-        if side and local("display-message", "-p", "-t", side, "#{session_name}", check=False) == name:
-            width = local("show-options", "-gqv", "@tmax-sidebar-width") or "28"
-            local("join-pane", "-d", "-fhb", "-l", width, "-s", side, "-t", fallback + ":", check=False)
         for line in local("list-clients", "-F", "#{session_name}\t#{client_name}", check=False).splitlines():
             session, client = line.split("\t", 1)
             if session == name:
@@ -1061,10 +1082,31 @@ def forget_proxy(name):
     local("kill-session", "-t", name, check=False)
 
 
+
+def unlock(host):
+    try:
+        if auth.unlock(RUNTIME, host, hosts()[host], SELF + ["auth-guard"]):
+            refresh(host)
+            switch_host("expand", host)
+        else:
+            input("Press Enter to return to the popup.")
+    except (KeyboardInterrupt, EOFError):
+        pass
+
+
+def lock(host):
+    if host in hosts():
+        auth.revoke(RUNTIME, host, hosts()[host])
+
+
+def auth_guard(host, token):
+    auth.guard(RUNTIME, host, hosts()[host], token)
+
+
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["rows", "refresh", "attach", "watch", "view", "action", "install", "prompt", "create", "rename", "remove", "tree", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview"])
+    parser.add_argument("command", choices=["unlock", "lock", "auth-guard", "refresh", "attach", "watch", "view", "action", "install", "prompt", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":

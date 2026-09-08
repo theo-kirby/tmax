@@ -1,16 +1,17 @@
 # Remote tmux architecture
 
-Remote access is independent of the optional session sidebar. The sidebar
-shows a local heading and configured host headings. With `@tmax-sidebar off`,
-remote discovery opens the native tmux session tree instead.
+Remote access uses the session popup on `prefix + Space`.
+The default tmux tree on `prefix + s` lists current local sessions.
 
 ## Configuration
 
 No remote hosts are bundled or automatically discovered. Users copy
 `remotes.example.json` to the Git-ignored `remotes.json`, or point
 `TMAX_REMOTES_FILE` to another JSON file. Each entry supplies a display label,
-SSH destination, and optional tmux executable, socket, or SSH control path.
-Normal SSH configuration supplies usernames and authentication identities.
+SSH destination, and optional tmux executable or socket.
+Normal SSH configuration supplies usernames and keys. Each destination must
+require key plus account password; tmax unlocks a private connection per host
+for at most 24 hours, with no unattended authentication fallback.
 Tailscale can provide connectivity, but ordinary SSH networking works too.
 
 ## Transport and local representations
@@ -37,10 +38,9 @@ representations are removed and clients return to a local session when possible.
 
 Integration tests create isolated local and remote tmux servers and remove
 only those servers. The bridge has been exercised against macOS and Linux
-hosts with tmux 3.4, using local tmux 3.5a. Coverage includes native and sidebar
-selection, input/output, windows, splits, zoom, hidden output, reconnecting,
-Vim restoration, session operations, and cleanup. Local regression checks
-cover groups, optional overview cleanup, and preservation of unrelated hooks.
+hosts with tmux 3.4, using local tmux 3.5a. Coverage includes popup selection and the native local tree, input/output, windows, splits, zoom, hidden output, reconnecting,
+Vim restoration and cleanup. Local regression checks cover popup navigation,
+filtering, favorites, session creation, and preservation of unrelated hooks.
 
 Arbitrary custom commands are not translated. Native-tree deletion removes
 the local representation; routed kill keys act remotely. Scrollback is not
