@@ -19,6 +19,7 @@ import sys
 import termios
 import time
 import tty
+from types import SimpleNamespace
 import unicodedata
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -356,6 +357,71 @@ def switch_enter(kind, host):
         print("accept")
 
 
+def switch_session(action, kind, host, sid):
+    """Prompt for session creation or confirmed termination on the selected host."""
+    if kind not in ("group", "session") or (action == "close" and kind != "session"):
+        return
+    if host != "local" and host not in hosts():
+        return
+    try:
+        if action == "create":
+            name = input("New session on " + label(host) + " (empty cancels): ").strip()
+            if not name:
+                return
+        elif action == "close":
+            before = local("display-message", "-p", "-t", sid,
+                           "#{session_name}\t#{pid}:#{session_created}\t#{@tmax-remote-host}\t"
+                           "#{@tmax-remote-session}\t#{@tmax-remote-epoch}")
+            name, epoch, owner, remote_sid, remote_epoch = before.split("\t")
+            if (owner or "local") != host:
+                raise RuntimeError("session host changed; select it again")
+            answer = input("Close session " + name + " on " + label(host) +
+                           " and all its windows? Are you sure? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                return
+        else:
+            return
+        if host != "local":
+            cfg = hosts()[host]
+            if not auth.live(auth.read_lease(RUNTIME, host, cfg)):
+                if not auth.unlock(RUNTIME, host, cfg, SELF + ["auth-guard"]):
+                    return
+        if action == "create":
+            if host == "local":
+                local("new-session", "-d", "-s", name)
+            else:
+                remote_sid, epoch, title = fetch(host, "new-session", "-d", "-s", name, "-P", "-F",
+                                                "#{session_id}\t#{pid}:#{session_created}\t#{session_name}").split("\t", 2)
+                proxy = prepare(host, remote_sid, epoch, clean(title))
+                local("set-option", "-t", proxy, "@tmax-remote-name", title)
+                local("set-option", "-t", proxy, "@tmax-remote-windows", "1")
+                refresh(host)
+            switch_host("expand", host)
+        else:
+            current = local("display-message", "-p", "-t", sid,
+                            "#{session_name}\t#{pid}:#{session_created}\t#{@tmax-remote-host}\t"
+                            "#{@tmax-remote-session}\t#{@tmax-remote-epoch}")
+            if current != before:
+                raise RuntimeError("session changed while confirming; select it again")
+            if host == "local":
+                local("kill-session", "-t", sid)
+            else:
+                if not re.fullmatch(r"\$\d+", remote_sid) or not remote_epoch:
+                    raise RuntimeError("remote session identity is unavailable")
+                if fetch(host, "display-message", "-p", "-t", remote_sid,
+                         "#{pid}:#{session_created}") != remote_epoch:
+                    raise RuntimeError("remote session was replaced; select it again")
+                fetch(host, "kill-session", "-t", remote_sid)
+                forget_proxy(name)
+                refresh(host)
+    except (KeyboardInterrupt, EOFError):
+        return
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        print("tmax: " + clean(str(exc)))
+        with contextlib.suppress(KeyboardInterrupt, EOFError):
+            input("Press Enter to return to the popup.")
+
+
 def host_statuses():
     """Configured remote hosts and their most recently refreshed status."""
     result = []
@@ -419,8 +485,39 @@ def fit_switch_preview(frame, columns, rows):
     return "\n".join(clip_switch_preview_line(line, columns) for line in source[-rows:])
 
 
+def switch_preview_window(sid, step=0):
+    """Resolve a popup's preview window without changing tmux's active window."""
+    windows = [line.split("\t") for line in local(
+        "list-windows", "-t", sid, "-F", "#{window_id}\t#{window_active}", check=False).splitlines()]
+    if not windows:
+        return sid + ":"
+    snapshot = os.environ.get("TMAX_SWITCH_SNAPSHOT")
+    path = Path(snapshot).with_suffix(".preview") if snapshot else None
+    try:
+        selected = json.loads(path.read_text()) if path else {}
+    except (OSError, ValueError):
+        selected = {}
+    ids = [window[0] for window in windows]
+    current = selected.get(sid)
+    if current not in ids:
+        current = next((wid for wid, active in windows if active == "1"), ids[0])
+    if step:
+        current = ids[(ids.index(current) + step) % len(ids)]
+        if path:
+            selected[sid] = current
+            temporary = path.with_suffix(".preview.tmp")
+            temporary.write_text(json.dumps(selected))
+            temporary.replace(path)
+    return sid + ":" + current
+
+
+def switch_preview_cycle(sid, kind, direction):
+    if kind == "session":
+        switch_preview_window(sid, int(direction))
+
+
 def switch_preview(sid, kind, *flags):
-    """Continuously render the selected session's active pane for fzf's preview area."""
+    """Continuously render the selected window's active pane for fzf's preview area."""
     if kind != "session":
         print("Select a session to preview its active window.")
         return
@@ -428,7 +525,8 @@ def switch_preview(sid, kind, *flags):
     while True:
         columns = max(1, int(os.environ.get("FZF_PREVIEW_COLUMNS", "80")))
         rows = max(1, int(os.environ.get("FZF_PREVIEW_LINES", "24")) - 2)
-        info = local("display-message", "-p", "-t", sid + ":",
+        target = switch_preview_window(sid)
+        info = local("display-message", "-p", "-t", target,
                      "#{session_name}\t#{window_index}\t#{window_name}\t#{window_panes}", check=False)
         if not info:
             title, frame = "Session is no longer available", ""
@@ -437,7 +535,7 @@ def switch_preview(sid, kind, *flags):
             title = session + "  ·  " + index + ": " + window
             if panes != "1":
                 title += "  ·  " + panes + " panes"
-            frame = local("capture-pane", "-p", "-e", "-t", sid + ":", check=False)
+            frame = local("capture-pane", "-p", "-e", "-t", target, check=False)
             frame = fit_switch_preview(frame, columns, rows)
         title = clip_switch_preview_line(title, columns)
         # Home + clear makes the long-running preview update in place. fzf stops
@@ -598,9 +696,80 @@ SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) f
     + [str(d) for d in range(10)] + ["-", "_", ".", "space"]
 # Keys whose fzf default edits the query: unbound in normal mode, restored in insert mode.
 SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
+SWITCH_LEGEND = ("j/k move · h/l windows · p preview · s list · c create · x close\n"
+                 "g/G first/last · Ctrl-d/u page · L lock · i / filter · Enter select\n"
+                 "Enter on host: collapse · H hosts · f star · q/Esc close · ? help")
 SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
-                      "q": "abort", "i": "enter-insert", "/": "enter-insert", "h": "toggle-host", "H": "toggle-hosts",
+                      "q": "abort", "i": "enter-insert", "/": "enter-insert", "c": "create-session", "x": "close-session", "H": "toggle-hosts",
+                      "h": "preview-left", "l": "preview-right", "?": "toggle-footer",
+                      "s": "toggle-list",
                       "f": "toggle-favorite", "p": "toggle-preview", "L": "lock-host"}
+
+
+def switch_help():
+    """Toggle the bottom legend for this popup."""
+    path = Path(os.environ["TMAX_SWITCH_SNAPSHOT"]).with_suffix(".help")
+    if path.exists():
+        path.unlink()
+        print(SWITCH_LEGEND)
+    else:
+        path.touch()
+
+
+def switch_preview_full(sid):
+    """Use the whole popup terminal while fzf suspends its list UI."""
+    path = Path(os.environ["TMAX_SWITCH_SNAPSHOT"]).with_suffix(".view")
+    with open("/dev/tty", "r+b", buffering=0) as terminal:
+        fd = terminal.fileno()
+        previous = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            terminal.write(b"\x1b[?1049h\x1b[?25l")
+            while True:
+                columns, lines = os.get_terminal_size(fd)
+                env = dict(os.environ, FZF_PREVIEW_COLUMNS=str(columns), FZF_PREVIEW_LINES=str(lines))
+                frame = subprocess.check_output(SELF + ["switch-preview", sid, "session", "--once"], env=env)
+                terminal.write(frame.replace(b"\n", b"\r\n").rstrip(b"\r\n"))
+                if not select.select([fd], [], [], 1)[0]:
+                    continue
+                pressed = os.read(fd, 1)
+                if pressed in (b"h", b"l"):
+                    switch_preview_window(sid, -1 if pressed == b"h" else 1)
+                elif pressed in (b"s", b"p", b"q", b"\x1b", b"\x03", b"\r", b"\n"):
+                    state = json.loads(path.read_text())
+                    state["return"] = ("abort" if pressed in (b"q", b"\x1b", b"\x03") else
+                                       "accept" if pressed in (b"\r", b"\n") else
+                                       "preview" if pressed == b"p" else "")
+                    path.write_text(json.dumps(state))
+                    return
+        finally:
+            terminal.write(b"\x1b[?25h\x1b[?1049l")
+            termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+
+
+def switch_view(action, kind, sid=""):
+    """Track preview visibility within one popup and enter its full view."""
+    path = Path(os.environ["TMAX_SWITCH_SNAPSHOT"]).with_suffix(".view")
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        state = {"visible": True}
+    if action == "return":
+        action = state.pop("return", "")
+        if action != "preview":
+            path.write_text(json.dumps(state))
+            print(action)
+            return
+    if action == "preview":
+        state["visible"] = not state["visible"]
+        command = "toggle-preview"
+    elif action == "list" and kind == "session" and state["visible"]:
+        command = ("execute(" + shlex.join(SELF + ["switch-preview-full", sid]) + ")+transform(" +
+                   shlex.join(SELF + ["switch-view", "return", kind]) + ")")
+    else:
+        return
+    path.write_text(json.dumps(state))
+    print(command)
 
 
 def fzf_color(value):
@@ -650,6 +819,9 @@ def switch(client):
             os.kill(int(stale.stem.split("-", 1)[1]), 0)
             continue
         stale.unlink(missing_ok=True)
+        stale.with_suffix(".preview").unlink(missing_ok=True)
+        stale.with_suffix(".help").unlink(missing_ok=True)
+        stale.with_suffix(".view").unlink(missing_ok=True)
     snapshot = RUNTIME / ("switch-" + str(os.getpid()) + ".txt")
     snapshot.write_text("\n".join(lines) + "\n")
     status_snapshot = snapshot.with_suffix(".status")
@@ -660,14 +832,22 @@ def switch(client):
     to_insert = "change-prompt(insert> )+unbind(" + ",".join(modal) + ")+rebind(" + edit + ")"
     to_normal = "change-prompt(normal> )+rebind(" + ",".join(modal) + ")+unbind(" + edit + ")"
     reload_rows = "reload-sync(" + shlex.join(SELF + ["switch-list"]) + ")"
-    toggle_host = "execute-silent(" + shlex.join(SELF + ["switch-host", "toggle"]) + " {7})+" + reload_rows
     toggle_hosts = "execute-silent(" + shlex.join(SELF + ["switch-hosts", "toggle"]) + ")+" + reload_rows
     toggle_favorite = "execute-silent(" + shlex.join(SELF + ["switch-favorite", "toggle"]) + " {6} {8})+" + reload_rows
     enter = "transform:[ \"$FZF_MATCH_COUNT\" = 0 ] && echo accept || " + shlex.join(SELF + ["switch-enter"]) + " {6} {7}"
     binds = ["start:unbind(" + edit + ")"]
     binds += [key + ":ignore" for key in SWITCH_TYPING_KEYS if key not in SWITCH_NORMAL_KEYS]
     lock_host = "execute-silent(" + shlex.join(SELF + ["lock"]) + " {7})+" + reload_rows
-    special = {"enter-insert": to_insert, "toggle-host": toggle_host,
+    cycle_preview = "execute-silent(" + shlex.join(SELF + ["switch-preview-cycle"]) + " {1} {6} "
+    session_action = "execute(" + shlex.join(SELF + ["switch-session"])
+    special = {"enter-insert": to_insert,
+               "create-session": session_action + " create {6} {7} {1})+" + reload_rows,
+               "close-session": session_action + " close {6} {7} {1})+" + reload_rows,
+               "toggle-list": "transform:" + shlex.join(SELF + ["switch-view", "list"]) + " {6} {1}",
+               "toggle-preview": "transform:" + shlex.join(SELF + ["switch-view", "preview"]) + " {6}",
+               "toggle-footer": "transform-footer(" + shlex.join(SELF + ["switch-help"]) + ")",
+               "preview-left": cycle_preview + "-1)+refresh-preview",
+               "preview-right": cycle_preview + "1)+refresh-preview",
                "toggle-hosts": toggle_hosts, "toggle-favorite": toggle_favorite, "lock-host": lock_host}
     binds += [key + ":" + special.get(action, action)
               for key, action in SWITCH_NORMAL_KEYS.items()]
@@ -679,7 +859,8 @@ def switch(client):
     command = [fzf, "--ansi", "--reverse", "--no-multi", "--cycle", "--info=inline-right",
                "--info-command", shlex.join(SELF + ["switch-status"]), "--print-query", "--prompt", "normal> ",
                "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1,2", "--tabstop", "1", "--track", "--id-nth", "1",
-               "--preview", preview, "--preview-window", "right,50%,border-left,hidden,nowrap"]
+               "--preview", preview, "--preview-window", "right,50%,border-left,nowrap",
+               "--footer", SWITCH_LEGEND]
     for bind in binds:
         command += ["--bind", bind]
     # No gutter bar: fzf would otherwise draw a bar in every row's first column in the highlight colour.
@@ -694,6 +875,9 @@ def switch(client):
     finally:
         snapshot.unlink(missing_ok=True)
         status_snapshot.unlink(missing_ok=True)
+        snapshot.with_suffix(".preview").unlink(missing_ok=True)
+        snapshot.with_suffix(".help").unlink(missing_ok=True)
+        snapshot.with_suffix(".view").unlink(missing_ok=True)
     output = result.stdout.splitlines()
     query = output[0].strip() if output else ""
     if result.returncode == 0 and len(output) > 1:
@@ -823,7 +1007,7 @@ def watch(host, sid):
             time.sleep(5 if attached == "1" else 15)
 
 
-class Control:
+class DirectControl:
     def __init__(self, host, sid, output):
         self.proc = subprocess.Popen(ssh(host, "-C", "attach-session", "-E", "-f", "no-output,ignore-size", "-t", sid),
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -891,6 +1075,147 @@ class Control:
             self.proc.wait()
 
 
+def control_socket(host, sid):
+    return RUNTIME / (key(proxy_key(host, sid)) + ".control.sock")
+
+
+def control_serve(host, sid):
+    """Share one SSH/tmux control client among all panes of a remote session."""
+    path = control_socket(host, sid)
+    with path.with_suffix(".lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        control = None
+        peers = {}
+        server = socket.socket(socket.AF_UNIX)
+        try:
+            control = DirectControl(host, sid, lambda *_: None)
+            path.unlink(missing_ok=True)
+            server.bind(str(path))
+            server.listen(64)
+            server.setblocking(False)
+            last_client = time.monotonic()
+            last_size = None
+
+            def broadcast(line):
+                if line.startswith(b"%exit"):
+                    raise ConnectionError("remote session ended")
+                for state in peers.values():
+                    state["out"] += line + b"\n"
+
+            control.event = broadcast
+
+            def resize():
+                nonlocal last_size
+                sizes = [state["size"] for state in peers.values() if state["visible"] and state["size"]]
+                size = (min(w for w, h in sizes), min(h for w, h in sizes)) if sizes else None
+                if size == last_size:
+                    return
+                control.call("refresh-client", "-f", "!ignore-size" if size else "ignore-size")
+                if size:
+                    control.call("refresh-client", "-C", "%dx%d" % size)
+                last_size = size
+
+            while peers or time.monotonic() - last_client < 10:
+                if not auth.live(auth.read_lease(RUNTIME, host, hosts()[host])):
+                    return
+                if b"\n" in control.buffer:
+                    control.event(control.line())
+                    continue
+                writable = [peer for peer, state in peers.items() if state["out"]]
+                ready, writes, _ = select.select([server, control.proc.stdout, *peers], writable, [], 0.2)
+                if server in ready:
+                    peer, _ = server.accept()
+                    peer.setblocking(False)
+                    peers[peer] = {"in": b"", "out": b"", "visible": False, "size": None}
+                    last_client = time.monotonic()
+                if control.proc.stdout in ready:
+                    control.event(control.line())
+                for peer in list(peers):
+                    state = peers[peer]
+                    try:
+                        if peer in writes:
+                            count = peer.send(state["out"])
+                            state["out"] = state["out"][count:]
+                        if peer in ready:
+                            data = peer.recv(65536)
+                            if not data:
+                                raise ConnectionError("pane disconnected")
+                            state["in"] += data
+                            while b"\n" in state["in"]:
+                                line, state["in"] = state["in"].split(b"\n", 1)
+                                args = json.loads(line)
+                                try:
+                                    if args[:2] == ["refresh-client", "-C"]:
+                                        state["size"] = tuple(map(int, args[2].split("x")))
+                                        resize()
+                                        result = b""
+                                    elif args[:2] == ["refresh-client", "-f"] and args[2] in ("ignore-size", "!ignore-size"):
+                                        state["visible"] = args[2] == "!ignore-size"
+                                        resize()
+                                        result = b""
+                                    else:
+                                        result = control.call(*args)
+                                    ending = b"%end 0 0 0\n"
+                                except RuntimeError as exc:
+                                    result = str(exc).encode()
+                                    ending = b"%error 0 0 0\n"
+                                state["out"] += b"%begin 0 0 0\n" + (result + b"\n" if result else b"") + ending
+                        if len(state["in"]) + len(state["out"]) > 4 * 1024 * 1024:
+                            raise ConnectionError("pane stopped reading")
+                    except (OSError, ValueError):
+                        peer.close()
+                        del peers[peer]
+                        last_client = time.monotonic()
+                        resize()
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            print(host + ": shared control: " + clean(str(exc)), flush=True)
+        finally:
+            for peer in peers:
+                peer.close()
+            server.close()
+            path.unlink(missing_ok=True)
+            if control:
+                control.close()
+
+
+class Control(DirectControl):
+    """A pane's local connection to the session's shared control client."""
+    def __init__(self, host, sid, output):
+        auth.connection(RUNTIME, host, hosts()[host])
+        self.buffer = b""
+        self.output = output
+        self.topology_changed = False
+        path = control_socket(host, sid)
+        with path.with_suffix(".start-lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.socket = socket.socket(socket.AF_UNIX)
+            try:
+                self.socket.connect(str(path))
+            except OSError:
+                spawn("control-serve", host, sid)
+                deadline = time.monotonic() + 12
+                while True:
+                    try:
+                        self.socket.connect(str(path))
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            self.socket.close()
+                            raise ConnectionError("could not start shared remote control connection")
+                        time.sleep(0.1)
+        self.proc = SimpleNamespace(stdout=self.socket)
+
+    def call(self, *args):
+        self.socket.sendall(json.dumps(args).encode() + b"\n")
+        return self.read_block()
+
+    def close(self):
+        self.socket.close()
+
+
 def repaint(control, rp):
     screen = control.call("capture-pane", "-p", "-e", "-t", rp)
     values = control.call("display-message", "-p", "-t", rp,
@@ -930,23 +1255,16 @@ def view(host, sid, rp):
                 epoch = control.call("display-message", "-p", "-t", sid, "#{pid}:#{session_created}").decode()
                 if epoch != local("show-options", "-qv", "-t", lp, "@tmax-remote-epoch"):
                     raise RuntimeError("remote session was replaced; close this proxy and reopen")
-                # Pause discards output without blocking remote applications, unlike 'off'.
-                for pane in control.call("list-panes", "-s", "-t", sid, "-F", "#{pane_id}").decode().splitlines():
-                    control.call("refresh-client", "-A", pane + ":pause")
+                # Every pane shares this control client; keep output enabled for
+                # all of them, including hidden panes that retain scrollback.
                 control.call("refresh-client", "-f", "!no-output")
                 # Keep this pane's terminal emulator synchronized even while its
                 # local window is hidden. Repainting on every return clears the
                 # local screen and corrupts its independently accumulated history.
-                control.call("refresh-client", "-A", rp + ":continue")
                 repaint(control, rp)
                 last_error = None
                 visible, size, last_check = False, None, 0
                 while True:
-                    if control.topology_changed:
-                        control.topology_changed = False
-                        for pane in control.call("list-panes", "-s", "-t", sid, "-F", "#{pane_id}").decode().splitlines():
-                            if pane != rp:
-                                control.call("refresh-client", "-A", pane + ":pause")
                     now = time.monotonic()
                     if now - last_check > 1:
                         last_check = now
@@ -1106,7 +1424,7 @@ def auth_guard(host, token):
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["unlock", "lock", "auth-guard", "refresh", "attach", "watch", "view", "action", "install", "prompt", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview"])
+    parser.add_argument("command", choices=["unlock", "lock", "auth-guard", "refresh", "attach", "watch", "view", "action", "install", "prompt", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview", "switch-preview-cycle", "switch-help", "switch-view", "switch-preview-full", "switch-session", "control-serve"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":

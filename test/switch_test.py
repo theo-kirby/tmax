@@ -3,7 +3,8 @@
 # opens the popup, types into fzf, and checks which session the client is on.
 # Does not touch your real tmux server.  Run:  python3 test/switch_test.py
 
-import os, pty, time, subprocess, sys, fcntl, termios, struct, select, tempfile, shutil, re
+import os, pty, time, subprocess, sys, fcntl, termios, struct, select, tempfile, shutil, re, json, shlex
+from pathlib import Path
 
 SOCK = "tmaxswitch"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +27,7 @@ if not shutil.which("fzf"):
 
 subprocess.run(["tmux", "-L", SOCK, "kill-server"], capture_output=True)
 t("-f", "/dev/null", "new-session", "-d", "-s", "alpha", "-x", "120", "-y", "40")
+t("set-option", "-s", "escape-time", "10")
 t("new-session", "-d", "-s", "beta", "-x", "120", "-y", "40")
 t("new-session", "-d", "-s", "gamma", "-x", "120", "-y", "40")
 t("new-window", "-d", "-t", "beta:")
@@ -83,6 +85,31 @@ group_preview = subprocess.run([sys.executable, os.path.join(HERE, "..", "script
                                capture_output=True, text=True, env=env).stdout
 expect("host rows show a preview hint", "Select a session" in group_preview, True)
 
+# Preview navigation is isolated from the session's active window.
+preview_env = dict(env, TMAX_SWITCH_SNAPSHOT=os.path.join(STATE, "preview-test.txt"))
+beta_sid = session_rows[1].split("\t")[0]
+def preview_command(command, *args):
+    return subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), command, *args],
+                          capture_output=True, text=True, env=preview_env, check=True).stdout
+
+def beta_preview():
+    return preview_command("switch-preview", beta_sid, "session", "--once")
+
+preview_command("switch-preview-cycle", beta_sid, "session", "1")
+expect("preview cycles right", "1:" in beta_preview(), True)
+preview_command("switch-preview-cycle", beta_sid, "session", "1")
+expect("preview wraps right", "0:" in beta_preview(), True)
+preview_command("switch-preview-cycle", beta_sid, "session", "-1")
+expect("preview wraps left", "1:" in beta_preview(), True)
+expect("cycling leaves active window unchanged", t("display-message", "-p", "-t", "beta:", "#{window_index}"), "0")
+preview_command("switch-preview-cycle", "host:local", "group", "1")
+expect("group cycling leaves preview unchanged", "1:" in beta_preview(), True)
+t("kill-window", "-t", "beta:1")
+expect("closed preview window falls back to active", "0:" in beta_preview(), True)
+t("new-window", "-d", "-t", "beta:1")
+expect("help hides", preview_command("switch-help"), "")
+expect("help restores legend", preview_command("switch-help").strip(), remote.SWITCH_LEGEND)
+
 unlock_action = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"),
                                 "switch-enter", "group", "srv"], capture_output=True, text=True, env=env).stdout
 expect("locked host Enter requests interactive unlock", "execute(" in unlock_action and "unlock srv" in unlock_action, True)
@@ -123,24 +150,21 @@ if pid == 0:
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 
 def drain():
+    out = b""
     while True:
         r, _, _ = select.select([fd], [], [], 0.05)
         if not r: break
-        try: os.read(fd, 65536)
+        try: out += os.read(fd, 65536)
         except OSError: break
+    return out
 
 def send(s, wait=0.6):
     os.write(fd, s.encode()); time.sleep(wait)
+    out = drain()
     if os.environ.get("TMAX_TEST_DEBUG"):
-        out = b""
-        while True:
-            r, _, _ = select.select([fd], [], [], 0.05)
-            if not r: break
-            try: out += os.read(fd, 65536)
-            except OSError: break
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\(B|\x1b\[[0-9]*X", "", out.decode(errors="replace"))
         print("   screen after %r: %s" % (s, re.sub(r"[\s\u2500-\u257f]+", " ", text)[-300:]))
-    drain()
+    return out
 
 def session(): return t("display-message", "-p", "#{client_session}")
 
@@ -156,10 +180,20 @@ send("\r", 0.8)
 expect("Enter collapses a host heading", switch_names(), ["srv/omega"])
 send("\r", 0.8)
 expect("Enter expands a host heading", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
-send("h", 0.8)
-expect("normal mode h collapses current host", switch_names(), ["srv/omega"])
-send("h", 0.8)
-expect("normal mode h expands current host", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
+send("c", 0.5); send("\r", 0.5)
+expect("empty create prompt cancels", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
+send("x", 0.5)
+expect("x ignores host headings", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
+send("c", 0.5); send("a-new\r", 0.8)
+expect("c creates on the selected local host", switch_names(), ["a-new", "alpha", "beta", "gamma", "srv/omega"])
+send("j", 0.3)
+prompt_output = send("x", 0.5)
+expect("x asks before closing", b"Are you sure?" in prompt_output, True)
+send("n\r", 0.5)
+expect("declining close preserves session", "a-new" in switch_names(), True)
+send("x", 0.5); send("y\r", 0.8)
+expect("confirmed x closes selected session", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
+send("g", 0.3)
 send("H", 0.8)
 expect("normal mode H hides all remote hosts", t("show-option", "-gqv", "@tmax-switch-hosts"), "off")
 send("H", 0.8)
@@ -169,6 +203,51 @@ expect("normal mode f stars a session", "local:alpha" in remote.switch_state()["
 send("f", 0.8)
 expect("normal mode f unstars a session", remote.switch_state()["favorites"], [])
 send("q", 1.0)
+
+# Exercise the actual modal bindings in fzf.
+runtime = subprocess.check_output([sys.executable, "-c",
+    "import sys; sys.path.insert(0, " + repr(os.path.join(HERE, "..", "scripts")) + "); import remote; print(remote.RUNTIME)"],
+    env=dict(env, TMUX=t("display-message", "-p", "#{socket_path},#{pid},0")), text=True).strip()
+probe = Path(STATE) / "fzf-env"
+t("set-environment", "-g", "FZF_DEFAULT_OPTS", shlex.join([
+    "--bind", "ctrl-t:execute-silent(env > " + shlex.quote(str(probe)) + ")"]))
+def preview_size():
+    send("\x14", 0.3)
+    values = dict(line.split("=", 1) for line in probe.read_text().splitlines() if "=" in line)
+    return int(values.get("FZF_PREVIEW_COLUMNS", "0")), int(values.get("FZF_PREVIEW_LINES", "0"))
+
+send("\x02 ", 1.5)
+group_size = preview_size()
+expect("preview is visible by default", group_size[0] > 0 and group_size[1] > 0, True)
+send("s", 0.5)
+expect("s ignores host headings", preview_size(), group_size)
+send("p", 0.4)
+send("i", 0.4); send("beta", 1.0); send("\x1b", 0.8)
+send("s", 0.5)
+view_path = next(Path(runtime).glob("switch-*.view"))
+expect("s leaves hidden preview hidden", json.loads(view_path.read_text()), {"visible": False})
+t("send-keys", "-t", "beta:0", "printf '%070dFULLWIDTH\\n' 0", "Enter")
+send("p", 0.5)
+split_size = preview_size()
+full_output = send("s", 0.8)
+expect("full preview renders beyond split boundary", b"FULLWIDTH" in full_output, True)
+send("l", 0.5)
+preview_paths = list(Path(runtime).glob("switch-*.preview"))
+expect("normal mode l selects next preview window", bool(preview_paths) and
+       json.loads(preview_paths[0].read_text()).get(beta_sid) == t("display-message", "-p", "-t", "beta:1", "#{window_id}"), True)
+send("h", 0.5)
+expect("normal mode h selects previous preview window", bool(preview_paths) and
+       json.loads(preview_paths[0].read_text()).get(beta_sid) == t("display-message", "-p", "-t", "beta:0", "#{window_id}"), True)
+send("s", 0.5)
+expect("s restores split view", preview_size(), split_size)
+send("?", 0.5)
+expect("question mark hides legend", bool(list(Path(runtime).glob("switch-*.help"))), True)
+send("?", 0.5)
+expect("question mark restores legend", list(Path(runtime).glob("switch-*.help")), [])
+send("s", 0.5); send("p", 0.5)
+expect("p exits full view and hides preview", json.loads(view_path.read_text()), {"visible": False})
+send("p", 0.5); send("s", 0.5); send("q", 0.8)
+expect("preview state cleaned up", list(Path(runtime).glob("switch-*.preview")), [])
 
 send("\x02 ", 1.5)              # C-b Space: open the popup, give fzf time to start
 send("j", 0.4); send("j", 0.4); send("j", 0.4); send("\r", 1.5)

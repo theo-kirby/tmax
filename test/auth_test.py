@@ -15,6 +15,18 @@ import auth
 
 
 class AuthTests(unittest.TestCase):
+    def test_unlock_failure_explains_dns_error_without_debug_trace(self):
+        message = auth.unlock_error("debug1: identity file /private/key\n"
+                                    "ssh: Could not resolve hostname sb1x: nodename nor servname provided\n")
+        self.assertIn("Could not resolve hostname sb1x", message)
+        self.assertIn("Tailscale", message)
+        self.assertNotIn("/private/key", message)
+
+    def test_unlock_failure_preserves_permission_and_network_errors(self):
+        for error in ["theo@box: Permission denied (publickey,password).",
+                      "ssh: connect to host box port 22: Operation timed out"]:
+            self.assertIn(error, auth.unlock_error("debug1: connecting\n" + error))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

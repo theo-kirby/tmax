@@ -81,8 +81,15 @@ them.
 
 `prefix + Space` opens a large popup with an [fzf](https://github.com/junegunn/fzf)
 list of every session, local and remote, in the spirit of
-[tmux-fzf](https://github.com/sainnhe/tmux-fzf). Press `p` to open a preview of
-the selected session's active window on the right half; it refreshes once a second. The preview starts hidden.
+[tmux-fzf](https://github.com/sainnhe/tmux-fzf). The selected session's active window is previewed on the right half by default;
+it refreshes once a second. Press `p` to hide or show the preview.
+Use `h` / `l` in normal mode to cycle left / right through that session's windows,
+wrapping at either end without changing its active window. Press `?` to toggle
+the key binding legend at the bottom of the popup.
+With the preview open and a session selected, press `s` to hide the list and
+fill the popup with the preview; press `s` again to restore the split view.
+In full preview, `h` / `l` still cycle windows, `p` returns to the list with the
+preview hidden, `Enter` selects the session, and `q` / `Esc` closes the popup.
 
 ```
 ╭─ sessions ─────────────────────────────────╮
@@ -127,13 +134,17 @@ back to normal mode with the filter kept.
 | normal | `j` `k` arrows    | move                                         |
 | normal | `g` `G`           | first / last                                 |
 | normal | `Ctrl-d` `Ctrl-u` | half page down / up                          |
-| normal | `h`               | collapse / expand the current session's host |
+| normal | `h` `l`           | preview the previous / next window (wraps)    |
+| normal | `c`               | prompt for a new session on the selected host |
+| normal | `x`               | close the selected session and its windows after confirmation |
+| normal | `?`               | show / hide the key binding legend           |
 | normal | `H`               | hide / show all remote hosts                  |
 | normal | `f`               | star / unstar the current session             |
 | normal | `p`               | show / hide the session preview               |
+| normal | `s`               | toggle list / full preview (requires an open preview and a selected session) |
 | normal | `i` `/`           | insert mode                                  |
 | normal | `L`               | lock the selected remote host |
-| normal | `Enter`           | unlock a locked host, or go to the session                            |
+| normal | `Enter`           | collapse/expand a host, unlock a locked host, or select a session |
 | normal | `q` `Esc`         | close                                        |
 | insert | typing            | filter; `Ctrl-j` `Ctrl-k` still move         |
 | insert | `Backspace`       | edit the filter                              |
@@ -211,10 +222,15 @@ The top-right status lists every configured remote host: `●` is connected,
 `◌` is checking, `○` is offline, and a yellow `●` means locked. It updates when the background refresh
 finishes; the normal fzf match count follows the host statuses.
 
-Pressing `h` in normal mode collapses the host under the cursor to its one-line
-heading, or expands it again. `Enter` does the same on a host heading. Press
+Press `Enter` on a host heading to collapse or expand its sessions. Press
 `H` to hide or show every remote host. These choices are remembered for later
 openings. Set `@tmax-switch-hosts` to `off` to start with only local sessions.
+
+Press `c` on a host heading or session to enter a name and create a session on
+that host. The host expands to show the new session. An empty name or `Ctrl-c`
+cancels. Press `x` on a session to close it and all its windows; confirm with
+`y` or `yes`, then Enter. Other answers cancel. Remote creation and closing run
+on the remote host, prompting for unlock when needed.
 
 Press `f` on any local or remote session to star it. Starred sessions move to
 the top of the switcher and stay visible even when their host group is
@@ -313,7 +329,9 @@ the requirement in both directions.
 Remote sessions appear locally as proxy sessions named `host/session` (the
 host key, then the remote session name; they follow remote renames). Until
 selected, a proxy is a lightweight placeholder. Selecting it connects its
-windows and panes through tmux control mode over SSH. There is one local
+windows and panes through tmux control mode over SSH. All panes in a remote
+session share one SSH channel, so opening more windows does not consume more
+channels on the authenticated connection. There is one local
 status bar and one local prefix; the remote machine keeps its own tmux
 configuration and running programs. Agent activity uses the small collector
 and hooks installed in your remote user account.
@@ -397,6 +415,7 @@ python3 test/live_activity_popup_test.py  # visible dot changes in an open popup
 python3 test/auth_test.py       # authentication, expiry, reboot, fail-closed behavior
 python3 test/password_popup_test.py  # interactive unlock/lock/cancel with fake SSH
 python3 test/switch_test.py     # prefix + Space popup: modes, filter, create, cancel
+python3 test/shared_control_test.py  # many remote windows over one shared channel; local fixtures only
 ```
 
 The remote integration suite creates and removes its own tmux servers on

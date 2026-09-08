@@ -110,6 +110,19 @@ def command(runtime, host, cfg):
             cfg["destination"]]
 
 
+def unlock_error(log):
+    """Show SSH's diagnostic without dumping its verbose authentication trace."""
+    lines = [line.strip() for line in log.splitlines()
+             if line.strip() and not re.match(r"^(?:debug\d+:|OpenSSH_|Authenticated |Transferred:|Bytes per second:)", line)]
+    detail = "\n".join(lines[-6:])
+    detail = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", detail)
+    detail = "".join(char for char in detail if char == "\n" or char.isprintable())
+    message = "Unlock failed." + ("\n" + detail[:2000] if detail else " SSH exited without an error detail.")
+    if "Could not resolve hostname" in detail:
+        message += "\nCheck the host's SSH alias and that Tailscale is connected to the network containing this machine."
+    return message
+
+
 def unlock(runtime, host, cfg, guard_command):
     with mutex(runtime, host, cfg):
         old = read_lease(runtime, host, cfg)
@@ -147,7 +160,7 @@ def unlock(runtime, host, cfg, guard_command):
             password_used = re.search(r'^Authenticated to .+ using "password"\.$', log, re.M)
             key_used = 'Authenticated using "publickey" with partial success.' in log
             if result.returncode or not password_used or not key_used:
-                print("Unlock failed." if result.returncode else
+                print(unlock_error(log) if result.returncode else
                       "Host did not require both key and account password. Run setup-host.py for this host first.")
                 return False
             now = time.time()
