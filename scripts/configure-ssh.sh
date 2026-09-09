@@ -8,6 +8,10 @@ if [ "$(id -u)" != 0 ] || [[ ! "$user" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]; then
   exit 1
 fi
 id "$user" >/dev/null
+# tmax shares one SSH master per host and opens a channel for each remote
+# session, plus its pollers. The OpenSSH default of 10 is too few: channel 11
+# is refused with "Connection closed by UNKNOWN port 65535".
+sessions=64
 sshd=/usr/sbin/sshd
 config=/etc/ssh/sshd_config
 begin="# BEGIN TMAX PASSWORD AUTH"
@@ -37,12 +41,14 @@ Match User $user
     PubkeyAuthentication yes
     PasswordAuthentication yes
     AuthenticationMethods publickey,password
+    MaxSessions $sessions
 $end
 EOF
 chmod 600 "$candidate"
 "$sshd" -t -f "$candidate"
 effective="$("$sshd" -T -f "$candidate" -C "user=$user,host=localhost,addr=127.0.0.1")"
-for requirement in 'authenticationmethods publickey,password' 'passwordauthentication yes' 'pubkeyauthentication yes'; do
+for requirement in 'authenticationmethods publickey,password' 'passwordauthentication yes' \
+                   'pubkeyauthentication yes' "maxsessions $sessions"; do
   if ! printf '%s\n' "$effective" | grep -qx "$requirement"; then
     echo "An earlier SSH policy overrides $requirement. No change installed." >&2
     exit 1
@@ -63,7 +69,7 @@ if [ "$(uname -s)" != Darwin ]; then
   fi
 fi
 complete=1
-echo "Enabled key + account password for $user."
+echo "Enabled key + account password for $user, with MaxSessions $sessions."
 echo "Backup: $backup"
 echo "Keep this connection open until a fresh login succeeds."
 echo "Rollback: sudo cp '$backup' '$config' (then reload ssh/sshd on Linux)."

@@ -26,8 +26,11 @@ class Locked(RuntimeError):
 
 @functools.lru_cache(maxsize=1)
 def boot_id():
+    # kern.boottime is unusable here: macOS rewrites it (down to the microsecond)
+    # whenever the wall clock is adjusted, so a long-lived process would keep a
+    # value that no new lease can match and revoke every one of them.
     if sys.platform == "darwin":
-        return subprocess.check_output(["sysctl", "-n", "kern.boottime"], text=True).strip()
+        return subprocess.check_output(["sysctl", "-n", "kern.bootsessionuuid"], text=True).strip()
     return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 

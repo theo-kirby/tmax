@@ -16,6 +16,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 import tty
@@ -1009,8 +1010,11 @@ def watch(host, sid):
 
 class DirectControl:
     def __init__(self, host, sid, output):
+        # A refused multiplex channel reports itself only on stderr. Keep it in
+        # a file: a pipe nobody drains would block the SSH client.
+        self.diagnostic = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(ssh(host, "-C", "attach-session", "-E", "-f", "no-output,ignore-size", "-t", sid),
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.diagnostic)
         self.buffer = b""
         self.output = output
         self.topology_changed = False
@@ -1029,10 +1033,22 @@ class DirectControl:
                 continue
             data = os.read(self.proc.stdout.fileno(), 65536)
             if not data:
-                raise ConnectionError("SSH control connection closed")
+                raise ConnectionError("SSH control connection closed" + self.detail())
             self.buffer += data
         line, self.buffer = self.buffer.split(b"\n", 1)
         return line
+
+    def detail(self):
+        """SSH's own reason for the close, when this client owns an SSH process."""
+        stream = getattr(self, "diagnostic", None)
+        if stream is None:
+            return ""
+        try:
+            stream.seek(0)
+            text = " ".join(stream.read().decode(errors="replace").split())
+        except (OSError, ValueError):
+            return ""
+        return ": " + clean(text)[:300] if text else ""
 
     def event(self, line):
         if line.startswith((b"%layout-change ", b"%window-add ")):
@@ -1073,6 +1089,7 @@ class DirectControl:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait()
+        self.diagnostic.close()
 
 
 def control_socket(host, sid):
