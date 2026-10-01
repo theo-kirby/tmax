@@ -70,9 +70,9 @@ remote connections.
 | `prefix + Space`  | session switcher popup                                  |
 | `prefix + s`      | tmux's default local session tree                      |
 
-In the switcher: `j`/`k` move, `Enter` goes, `h` folds a host, `H` toggles all
-remote hosts, `f` stars a session, `L` locks a host, `i` types a filter, and
-`Esc` or `q` closes.
+In the switcher: `j`/`k` move, `Enter` goes, `h` folds a host, `H` shows only
+the selected host, `f` stars a session, `L` locks a host, `i` types a filter,
+and `Esc` or `q` closes.
 Remote sessions attach as you pick them. Once attached, they are ordinary tmux
 sessions: `prefix + (` and `)`, the tree, and the switcher all move between
 them.
@@ -138,7 +138,7 @@ back to normal mode with the filter kept.
 | normal | `c`               | prompt for a new session on the selected host |
 | normal | `x`               | close the selected session and its windows after confirmation |
 | normal | `?`               | show / hide the key binding legend           |
-| normal | `H`               | hide / show all remote hosts                  |
+| normal | `H`               | show only the selected host / show all hosts  |
 | normal | `f`               | star / unstar the current session             |
 | normal | `p`               | show / hide the session preview               |
 | normal | `s`               | toggle list / full preview (requires an open preview and a selected session) |
@@ -222,9 +222,14 @@ The top-right status lists every configured remote host: `●` is connected,
 `◌` is checking, `○` is offline, and a yellow `●` means locked. It updates when the background refresh
 finishes; the normal fzf match count follows the host statuses.
 
-Press `Enter` on a host heading to collapse or expand its sessions. Press
-`H` to hide or show every remote host. These choices are remembered for later
-openings. Set `@tmax-switch-hosts` to `off` to start with only local sessions.
+Press `Enter` on a host heading to collapse or expand its sessions. A locked
+host is always shown collapsed; once unlocked it returns to its saved
+collapse state. Press
+`H` on a host heading or one of its sessions to show only that host, local or
+remote, hiding every other host; press `H` again to show all hosts. These
+choices are remembered for later openings. Set `@tmax-switch-hosts` to `off`
+to start with only local sessions, or to a host key from `remotes.json` to
+start with only that host.
 
 Press `c` on a host heading or session to enter a name and create a session on
 that host. The host expands to show the new session. An empty name or `Ctrl-c`
@@ -251,7 +256,7 @@ Options, in `~/.tmux.conf` before the `run-shell` line:
 set -g @tmax-switch-key    "Space"  # prefix + key
 set -g @tmax-switch-width  "75%"    # popup size, columns or percent
 set -g @tmax-switch-height "65%"
-set -g @tmax-switch-hosts  "on"     # show remote-host sessions initially
+set -g @tmax-switch-hosts  "on"     # on: all hosts, off: local only, or a host key
 ```
 
 ## Remote computers
@@ -371,7 +376,7 @@ Put these in `~/.tmux.conf` **before** the `run-shell` line. Defaults shown.
 set -g @tmax-switch-key    "Space"
 set -g @tmax-switch-width  "75%"
 set -g @tmax-switch-height "65%"
-set -g @tmax-switch-hosts  "on"     # H toggles all remote-host sessions
+set -g @tmax-switch-hosts  "on"     # on: all hosts, off: local only, or a host key
 ```
 
 Environment variables (set with `tmux set-environment -g`): `TMAX_REMOTES_FILE`

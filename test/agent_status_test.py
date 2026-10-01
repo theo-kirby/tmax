@@ -64,7 +64,7 @@ class ActivityTests(unittest.TestCase):
         listing = "$0\tlocal\t\t\t3\t\n$1\tbox/remote\tbox\tremote\t2\t$9"
         with patch.object(remote, "local", return_value=listing), \
              patch.object(remote, "hosts", return_value={"box": {"destination": "box"}}), \
-             patch.object(remote, "switch_hosts_visible", return_value=True), \
+             patch.object(remote, "switch_hosts_focus", return_value=None), \
              patch.object(remote, "switch_state", return_value={"favorites": [], "collapsed": []}), \
              patch.object(remote, "activity_snapshot", return_value={"$0": ["plain", "working", "waiting"]}), \
              patch.object(remote, "remote_activity", return_value={"box": {"$9": ["plain", "working"]}}), \

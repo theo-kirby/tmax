@@ -122,6 +122,27 @@ def switch_names():
     result = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
                             capture_output=True, text=True, env=env)
     return [row.split("\t")[1] for row in result.stdout.splitlines() if row.split("\t")[5] == "session"]
+def srv_heading():
+    result = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-list"],
+                            capture_output=True, text=True, env=env)
+    return next(row.split("\t")[2].strip() for row in result.stdout.splitlines() if row.split("\t")[0] == "host:srv")
+expect("locked host collapses its sessions", [switch_names(), srv_heading()], [["alpha", "beta", "gamma"], "▸ big server"])
+# Unlock srv with a fake lease; a stub ssh accepts control checks and fails real commands.
+fake_bin = os.path.join(STATE, "bin")
+os.makedirs(fake_bin)
+with open(os.path.join(fake_bin, "ssh"), "w") as f:
+    f.write('#!/bin/sh\nfor a in "$@"; do [ "$a" = "-O" ] && exit 0; done\nexit 255\n')
+os.chmod(os.path.join(fake_bin, "ssh"), 0o755)
+env["PATH"] = fake_bin + os.pathsep + env["PATH"]
+t("set-environment", "-g", "PATH", env["PATH"])
+# RUNTIME depends on TMUX, so write the lease with the switcher's environment.
+subprocess.run([sys.executable, "-c", "import json, sys, time; sys.path.insert(0, sys.argv[1]); import remote; "
+                "remote.RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True); now = time.time(); "
+                "remote.auth.lease_path(remote.RUNTIME, 'srv', remote.hosts()['srv']).write_text(json.dumps({"
+                "'boot': remote.auth.boot_id(), 'started': now, 'expires': now + 3600, 'deadline': time.monotonic() + 3600, "
+                "'token': 'test', 'socket': sys.argv[2], 'destination': 'nowhere.invalid'}))",
+                os.path.join(HERE, "..", "scripts"), os.path.join(STATE, "fake.sock")], env=env, check=True)
+expect("unlocked host restores its sessions", [switch_names(), srv_heading()], [["alpha", "beta", "gamma", "srv/omega"], "▾ big server"])
 expect("hosts are shown by default", switch_names(), ["alpha", "beta", "gamma", "srv/omega"])
 subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-host", "collapse", "srv"], env=env, check=True)
 expect("one host collapses", switch_names(), ["alpha", "beta", "gamma"])
@@ -142,6 +163,19 @@ subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py")
 expect("switch-hosts toggle", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
        [["alpha", "beta", "gamma"], "off"])
 subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "toggle"], env=env, check=True)
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "toggle", "srv"], env=env, check=True)
+expect("switch-hosts toggle on a remote host shows only that host", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["srv/omega"], "srv"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "toggle", "local"], env=env, check=True)
+expect("switch-hosts toggle on local while a remote host is focused shows only local", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["alpha", "beta", "gamma"], "off"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "only", "srv"], env=env, check=True)
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "toggle", "srv"], env=env, check=True)
+expect("switch-hosts toggle on the focused host shows every host", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["alpha", "beta", "gamma", "srv/omega"], "on"])
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "only", "unknown"], env=env, check=True)
+expect("switch-hosts with an unknown host falls back to local", t("show-option", "-gqv", "@tmax-switch-hosts"), "off")
+subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"), "switch-hosts", "show"], env=env, check=True)
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -198,6 +232,13 @@ send("H", 0.8)
 expect("normal mode H hides all remote hosts", t("show-option", "-gqv", "@tmax-switch-hosts"), "off")
 send("H", 0.8)
 expect("normal mode H shows all remote hosts", t("show-option", "-gqv", "@tmax-switch-hosts"), "on")
+send("G", 0.3); send("H", 0.8)
+expect("normal mode H on a remote session shows only its host", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["srv/omega"], "srv"])
+send("H", 0.8)
+expect("normal mode H again shows every host", [switch_names(), t("show-option", "-gqv", "@tmax-switch-hosts")],
+       [["alpha", "beta", "gamma", "srv/omega"], "on"])
+send("g", 0.3)
 send("j", 0.3); send("f", 0.8)
 expect("normal mode f stars a session", "local:alpha" in remote.switch_state()["favorites"], True)
 send("f", 0.8)

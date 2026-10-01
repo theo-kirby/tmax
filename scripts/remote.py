@@ -276,21 +276,34 @@ def host_colour(host, position):
     return config().get(host, {}).get("colour") or HOST_COLOURS[position % len(HOST_COLOURS)]
 
 
-def switch_hosts_visible():
-    """Whether remote-host sessions should be included in the switcher."""
-    return local("show-options", "-gqv", "@tmax-switch-hosts", check=False) != "off"
+def switch_hosts_focus():
+    """The only host the switcher shows, or None when every host is listed.
+
+    @tmax-switch-hosts is "on" (all hosts), "off" (local only), or a remote host key."""
+    value = local("show-options", "-gqv", "@tmax-switch-hosts", check=False)
+    if value == "off":
+        return "local"
+    return value if value in hosts() else None
 
 
-def switch_hosts(mode="toggle"):
-    """Show, hide, or toggle remote-host sessions in subsequent switcher lists."""
-    if mode not in ("show", "hide", "toggle"):
-        raise ValueError("switch-hosts expects show, hide, or toggle")
-    visible = switch_hosts_visible()
-    if mode == "toggle":
-        visible = not visible
+def switch_hosts(mode="toggle", host="local"):
+    """Choose which hosts later switcher lists include.
+
+    show: every host. hide: local only. only HOST: that host alone.
+    toggle HOST: that host alone, or every host if it is already the only one."""
+    if mode not in ("show", "hide", "only", "toggle"):
+        raise ValueError("switch-hosts expects show, hide, only, or toggle")
+    if host != "local" and host not in hosts():
+        host = "local"
+    if mode == "show":
+        focus = None
+    elif mode == "hide":
+        focus = "local"
+    elif mode == "only":
+        focus = host
     else:
-        visible = mode == "show"
-    local("set-option", "-g", "@tmax-switch-hosts", "on" if visible else "off")
+        focus = None if switch_hosts_focus() == host else host
+    local("set-option", "-g", "@tmax-switch-hosts", "on" if focus is None else "off" if focus == "local" else focus)
 
 
 def switch_state():
@@ -599,7 +612,7 @@ def switch_rows(refresh_hosts=False):
     by --with-nth; the ID lets fzf track the cursor across reloads."""
     errors = discover() if refresh_hosts else []
     order = {host: index for index, host in enumerate(hosts())}
-    show_hosts = switch_hosts_visible()
+    focus = switch_hosts_focus()
     state = switch_state()
     collapsed, favorites = set(state["collapsed"]), set(state["favorites"])
     sessions_by_host = {"local": []}
@@ -608,9 +621,9 @@ def switch_rows(refresh_hosts=False):
     for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t#{@tmax-remote-name}\t"
                       "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}}\t#{@tmax-remote-session}", check=False).splitlines():
         sid, name, host, title, count, remote_sid = line.split("\t", 5)
-        if host and not show_hosts:
-            continue
         host = host or "local"
+        if focus not in (None, host):
+            continue
         shown = title or (name[len(host) + 1:] if host != "local" and name.startswith(host + "/") else name)
         states = (local_activity.get(sid) if host == "local" else
                   cached_activity.get(host, {}).get(remote_sid))
@@ -626,7 +639,7 @@ def switch_rows(refresh_hosts=False):
     for entries in sessions_by_host.values():
         entries.sort()
 
-    host_order = ["local"] + (list(hosts()) if show_hosts else [])
+    host_order = [host for host in ["local", *hosts()] if focus in (None, host)]
     rows = []
     # Favorites are real session rows, moved out of their normal host group.
     for host in host_order:
@@ -635,14 +648,15 @@ def switch_rows(refresh_hosts=False):
                 rows.append((sid, name, "★ " + shown, detail, badge, "session", host, identity))
     for host in host_order:
         entries = sessions_by_host.get(host, [])
-        arrow = "▸" if host in collapsed else "▾"
-        count = activity_dots([session_states[entry[1]] for entry in entries])
-        if host != "local" and not auth.live(auth.read_lease(RUNTIME, host, hosts()[host])):
-            count = "locked"
+        locked = host != "local" and not auth.live(auth.read_lease(RUNTIME, host, hosts()[host]))
+        # Locked hosts always render folded; the saved preference returns on unlock.
+        folded = locked or host in collapsed
+        arrow = "▸" if folded else "▾"
+        count = "locked" if locked else activity_dots([session_states[entry[1]] for entry in entries])
         badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
         badge = tint(label(host), host_colour(host, badge_position))
         rows.append(("host:" + host, "-", arrow + " " + label(host), count, badge, "group", host, "-"))
-        if host not in collapsed:
+        if not folded:
             for _, sid, name, shown, detail, badge, identity in entries:
                 if identity not in favorites:
                     rows.append((sid, name, "  " + shown, detail, badge, "session", host, identity))
@@ -669,14 +683,14 @@ def switch_refresh(snapshot, *flags):
     """Poll when the user pauses; never rearrange rows during active navigation."""
     if "--initial" not in flags and int(os.environ.get("FZF_IDLE_TIME_MS", "1000")) < 1000:
         return
-    settings_before = (switch_state(), switch_hosts_visible())
+    settings_before = (switch_state(), switch_hosts_focus())
     path = Path(snapshot)
     if not path.exists():
         return
     status_path = path.with_suffix(".status")
     lines, _ = switch_rows(True)
     text = "\n".join(lines) + "\n"
-    if settings_before != (switch_state(), switch_hosts_visible()):
+    if settings_before != (switch_state(), switch_hosts_focus()):
         return
     status = host_status_signature()
     rows_changed = path.exists() and path.read_text() != text
@@ -699,7 +713,7 @@ SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) f
 SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
 SWITCH_LEGEND = ("j/k move · h/l windows · p preview · s list · c create · x close\n"
                  "g/G first/last · Ctrl-d/u page · L lock · i / filter · Enter select\n"
-                 "Enter on host: collapse · H hosts · f star · q/Esc close · ? help")
+                 "Enter on host: collapse · H only this host · f star · q/Esc close · ? help")
 SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
                       "q": "abort", "i": "enter-insert", "/": "enter-insert", "c": "create-session", "x": "close-session", "H": "toggle-hosts",
                       "h": "preview-left", "l": "preview-right", "?": "toggle-footer",
@@ -833,7 +847,7 @@ def switch(client):
     to_insert = "change-prompt(insert> )+unbind(" + ",".join(modal) + ")+rebind(" + edit + ")"
     to_normal = "change-prompt(normal> )+rebind(" + ",".join(modal) + ")+unbind(" + edit + ")"
     reload_rows = "reload-sync(" + shlex.join(SELF + ["switch-list"]) + ")"
-    toggle_hosts = "execute-silent(" + shlex.join(SELF + ["switch-hosts", "toggle"]) + ")+" + reload_rows
+    toggle_hosts = "execute-silent(" + shlex.join(SELF + ["switch-hosts", "toggle"]) + " {7})+" + reload_rows
     toggle_favorite = "execute-silent(" + shlex.join(SELF + ["switch-favorite", "toggle"]) + " {6} {8})+" + reload_rows
     enter = "transform:[ \"$FZF_MATCH_COUNT\" = 0 ] && echo accept || " + shlex.join(SELF + ["switch-enter"]) + " {6} {7}"
     binds = ["start:unbind(" + edit + ")"]

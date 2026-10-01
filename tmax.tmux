@@ -23,7 +23,7 @@ tmux set-hook -g 'client-session-changed[472]' "run-shell -b \"python3 '$CURRENT
 #   set -g @tmax-switch-key    "Space"
 #   set -g @tmax-switch-width  "75%"
 #   set -g @tmax-switch-height "65%"
-#   set -g @tmax-switch-hosts  "on" # remote sessions start shown; H toggles them
+#   set -g @tmax-switch-hosts  "on" # all hosts shown; "off" or a host key shows one. H toggles
 # display-popup does not expand formats in its command (tmux 3.4), so run-shell
 # fills in the client name and opens the popup on that client. The border takes
 # the status bar's background colour (or the default when it has none).

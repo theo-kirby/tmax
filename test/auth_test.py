@@ -14,6 +14,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import auth
 
 
+class BootIdentityTests(unittest.TestCase):
+    def test_macos_uses_boot_session_uuid(self):
+        auth.boot_id.cache_clear()
+        self.addCleanup(auth.boot_id.cache_clear)
+        with patch.object(auth.sys, "platform", "darwin"), \
+             patch.object(auth.subprocess, "check_output", return_value="boot-uuid\n") as query:
+            self.assertEqual(auth.boot_id(), "boot-uuid")
+            self.assertEqual(auth.boot_id(), "boot-uuid")
+        query.assert_called_once_with(["sysctl", "-n", "kern.bootsessionuuid"], text=True)
+
+
 class AuthTests(unittest.TestCase):
     def test_unlock_failure_explains_dns_error_without_debug_trace(self):
         message = auth.unlock_error("debug1: identity file /private/key\n"
