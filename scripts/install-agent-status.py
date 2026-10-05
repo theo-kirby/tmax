@@ -44,7 +44,7 @@ def main():
         if cfg is None:
             parser.error("unknown remote host: " + args.host)
         files = {name: (ROOT / name).read_text() for name in
-                 ["scripts/agent_status.py", "scripts/install-agent-status.py", "integrations/pi-status.ts"]}
+                 ["scripts/agent_status.py", "scripts/lab_agents.py", "scripts/install-agent-status.py", "integrations/pi-status.ts"]}
         installer = """import json,sys,tempfile,subprocess
 from pathlib import Path
 files=json.load(sys.stdin)
@@ -67,6 +67,7 @@ with tempfile.TemporaryDirectory(prefix='tmax-agent-install-') as directory:
     target = home / ".local/share/tmax"
     target.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "scripts/agent_status.py", target / "agent_status.py")
+    shutil.copy2(ROOT / "scripts/lab_agents.py", target / "lab_agents.py")
     common = ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse",
               "PostToolUse", "PermissionRequest", "Stop", "PreCompact"]
     base = 'python3 "$HOME/.local/share/tmax/agent_status.py" hook '

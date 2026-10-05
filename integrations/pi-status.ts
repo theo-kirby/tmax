@@ -6,7 +6,6 @@ import { join } from "node:path";
 export default function (pi: any) {
   let pending = Promise.resolve();
   const report = (event: string) => {
-    if (!process.env.TMUX_PANE) return;
     pending = pending.then(() => new Promise<void>((resolve) => {
       execFile("python3", [join(homedir(), ".local/share/tmax/agent_status.py"), "hook", "pi", event],
       { env: { ...process.env, TMAX_AGENT_PID: String(process.pid) }, timeout: 4000 },

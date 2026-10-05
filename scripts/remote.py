@@ -3,6 +3,7 @@
 import argparse
 import auth
 import agent_status
+import lab_agents
 import contextlib
 import fcntl
 import hashlib
@@ -315,6 +316,7 @@ def switch_state():
     return {
         "collapsed": list(data.get("collapsed", [])),
         "favorites": list(data.get("favorites", [])),
+        "attention": bool(data.get("attention", False)),
     }
 
 
@@ -340,6 +342,38 @@ def switch_host(mode, host):
         collapsed.discard(host)
     data["collapsed"] = sorted(collapsed)
     save_switch_state(data)
+
+
+def switch_attention():
+    data = switch_state()
+    data["attention"] = not data.get("attention", False)
+    save_switch_state(data)
+
+
+def switch_agent_details(kind, host, sid):
+    if kind != "session": return
+    name = local("display-message", "-p", "-t", sid, "#{session_name}", check=False)
+    cfg = hosts().get(host, {})
+    canonical = lab_agents.host_id() if host == "local" else cfg.get("agent_host", cfg.get("destination", host).split("@")[-1].split(".")[0])
+    if host != "local" and name.startswith(host + "/"): name = name[len(host)+1:]
+    try:
+        data = json.loads((lab_agents.state_dir()/"overview.json").read_text())
+        tasks = {t["id"]:t for t in data.get("tasks", [])}
+        runs = {r["id"]:tasks.get(r.get("taskId"), {}) for r in data.get("runs", [])}
+        for agent in data.get("sessions", []):
+            attachment = agent.get("attachment") or {}
+            if attachment.get("host") != canonical or attachment.get("session") != name: continue
+            task = runs.get(agent["runId"], {})
+            print(clean(task.get("title") or agent.get("project") or "Unassigned"))
+            print(clean(agent["provider"] + " · " + agent["activity"] + " · " + agent["observedAt"]))
+            print(clean(agent.get("summary", "")))
+            if agent.get("attention"): print("Needs you: " + clean(agent["attention"]))
+            for event in [e for e in data.get("events", []) if e["runId"] == agent["runId"]][:8]:
+                print(clean(event["occurredAt"] + " · " + event["kind"] + " · " + event["summary"]))
+            print()
+    except (OSError, ValueError): print("Agent history not available yet. Start the configured reporter.")
+    try: input("Press Enter to return.")
+    except EOFError: pass
 
 
 def switch_favorite(mode, kind, identity):
@@ -618,6 +652,7 @@ def switch_rows(refresh_hosts=False):
     sessions_by_host = {"local": []}
     local_activity, cached_activity = activity_snapshot(), remote_activity()
     session_states = {}
+    context = lab_agents.context_by_session()
     for line in local("list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@tmax-remote-host}\t#{@tmax-remote-name}\t"
                       "#{?@tmax-remote-host,#{@tmax-remote-windows},#{session_windows}}\t#{@tmax-remote-session}", check=False).splitlines():
         sid, name, host, title, count, remote_sid = line.split("\t", 5)
@@ -632,6 +667,18 @@ def switch_rows(refresh_hosts=False):
         states = [state if state in DOT_COLOURS else "plain" for state in states]
         session_states[sid] = agent_status.strongest(states)
         detail = activity_dots(states)
+        cfg = hosts().get(host, {})
+        canonical = lab_agents.host_id() if host == "local" else cfg.get("agent_host", cfg.get("destination", host).split("@")[-1].split(".")[0])
+        agent = context.get(canonical, {}).get(shown, {})
+        if state.get("attention") and not agent.get("attention"):
+            continue
+        if agent.get("text"):
+            detail += "  " + clean(agent["text"])
+            try:
+                import datetime
+                age = time.time() - datetime.datetime.fromisoformat(agent["observedAt"].replace("Z", "+00:00")).timestamp()
+                if age > 90: detail += " [stale]"
+            except (ValueError, KeyError): pass
         badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
         badge = tint(label(host), host_colour(host, badge_position))
         identity = ("local:" + name) if host == "local" else ("remote:" + host + ":" + shown)
@@ -711,10 +758,10 @@ SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) f
     + [str(d) for d in range(10)] + ["-", "_", ".", "space"]
 # Keys whose fzf default edits the query: unbound in normal mode, restored in insert mode.
 SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
-SWITCH_LEGEND = ("j/k move · h/l windows · p preview · s list · c create · x close\n"
+SWITCH_LEGEND = ("j/k move · h/l windows · p preview · s list · c create · x close · a attention · d agent\n"
                  "g/G first/last · Ctrl-d/u page · L lock · i / filter · Enter select\n"
                  "Enter on host: collapse · H only this host · f star · q/Esc close · ? help")
-SWITCH_NORMAL_KEYS = {"j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
+SWITCH_NORMAL_KEYS = {"a": "toggle-attention", "d": "agent-details", "j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
                       "q": "abort", "i": "enter-insert", "/": "enter-insert", "c": "create-session", "x": "close-session", "H": "toggle-hosts",
                       "h": "preview-left", "l": "preview-right", "?": "toggle-footer",
                       "s": "toggle-list",
@@ -855,7 +902,9 @@ def switch(client):
     lock_host = "execute-silent(" + shlex.join(SELF + ["lock"]) + " {7})+" + reload_rows
     cycle_preview = "execute-silent(" + shlex.join(SELF + ["switch-preview-cycle"]) + " {1} {6} "
     session_action = "execute(" + shlex.join(SELF + ["switch-session"])
-    special = {"enter-insert": to_insert,
+    special = {"toggle-attention": "execute-silent(" + shlex.join(SELF + ["switch-attention"]) + ")+" + reload_rows,
+               "agent-details": "execute(" + shlex.join(SELF + ["switch-agent-details"]) + " {6} {7} {1})",
+               "enter-insert": to_insert,
                "create-session": session_action + " create {6} {7} {1})+" + reload_rows,
                "close-session": session_action + " close {6} {7} {1})+" + reload_rows,
                "toggle-list": "transform:" + shlex.join(SELF + ["switch-view", "list"]) + " {6} {1}",
@@ -1455,7 +1504,7 @@ def auth_guard(host, token):
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["unlock", "lock", "auth-guard", "refresh", "attach", "watch", "view", "action", "install", "prompt", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview", "switch-preview-cycle", "switch-help", "switch-view", "switch-preview-full", "switch-session", "control-serve"])
+    parser.add_argument("command", choices=["switch-attention", "switch-agent-details", "unlock", "lock", "auth-guard", "refresh", "attach", "watch", "view", "action", "install", "prompt", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview", "switch-preview-cycle", "switch-help", "switch-view", "switch-preview-full", "switch-session", "control-serve"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":

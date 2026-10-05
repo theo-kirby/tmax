@@ -437,3 +437,26 @@ python3 test/remote_integration_test.py --host user@laptop \
 It checks popup selection, the local session tree, interactive input/output,
 remote windows/splits/zoom, hidden output, reconnection, Vim restoration,
 confirmed pane deletion, and cleanup of ended sessions. Existing remote sessions are not targeted.
+
+## Lab agent overview
+
+Optional `scripts/lab_agents.py` keeps a private local lifecycle queue and reports
+metadata to the lab dashboard. It supports interactive Claude/Codex/Pi hooks and
+explicit Ouroboros project roots. Work and personal sessions can share the view.
+No prompts or transcripts are uploaded; runners retain execution control.
+
+Configure `~/.config/tmax/agents.json` with `host`, HTTPS `endpoint`, private
+`tokenFile`, and optional `ouroboros` project roots / tmux `sockets` paths. Run
+`python3 scripts/install-agent-reporter.py --config <file> --enable`, then install
+the existing agent-status integrations. New clients load hooks; Codex hook trust
+is still explicitly managed by Codex.
+
+The switcher adds assigned task/project and attention context beside its dots.
+`a` toggles needs-attention rows; `d` shows cached lifecycle history. Task creation
+and assignment live in the dashboard Agents page. SSH attachment/unlock behavior
+is unchanged. A remote `agent_host` option maps an SSH alias to its reporter host.
+
+The reporter runs independently of the switcher, queues during outages, and never
+blocks agent decisions on network access. Stale cached context is marked.
+Tests: `python3 test/lab_agents_test.py`. Full operations are documented in the
+lab-dashboard repository at `deploy/agents-operations.md`.

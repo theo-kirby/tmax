@@ -39,7 +39,7 @@ def agent_name(command):
     executable = Path(words[0]).name
     if executable in {"codex", "claude", "pi", "pi-coding-agent"}:
         return executable
-    if "/claude/versions/" in words[0] or executable.startswith("codex-aarch64-"):
+    if "/claude/versions/" in words[0] or executable.startswith(("codex-aarch64-", "codex-x86_64-")):
         return "claude" if "/claude/" in words[0] else "codex"
     if executable in {"node", "bun"} and len(words) > 1:
         script = words[1]
@@ -92,8 +92,6 @@ def event_state(event, payload):
 
 def hook(provider, event=None):
     pane = os.environ.get("TMUX_PANE", "")
-    if not re.fullmatch(r"%\d+", pane) or not os.environ.get("TMUX"):
-        return
     payload = {} if event else json.load(sys.stdin)
     # A background subagent must not overwrite the interactive parent's state.
     if payload.get("agent_id"):
@@ -118,6 +116,14 @@ def hook(provider, event=None):
         pid = int(explicit)
         owner = (pid, table[pid][1])
     if not owner:
+        return
+    # The optional lab reporter retains lifecycle history independently of tmux.
+    try:
+        import lab_agents
+        lab_agents.hook(provider, event or payload.get("hook_event_name"), payload, owner, pane)
+    except Exception:
+        pass
+    if not re.fullmatch(r"%\d+", pane) or not os.environ.get("TMUX"):
         return
     data = json.dumps({"state": state, "pid": owner[0], "started": owner[1], "provider": provider, "event": event or payload.get("hook_event_name")})
     run(["tmux", "set-option", "-p", "-t", pane, OPTION, data])

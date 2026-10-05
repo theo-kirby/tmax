@@ -295,7 +295,7 @@ send("j", 0.4); send("j", 0.4); send("j", 0.4); send("\r", 1.5)
 expect("normal mode: navigation + Enter switches to gamma", session(), "gamma")
 
 send("\x02 ", 1.5)
-send("gam", 0.6); send("j", 0.3); send("\r", 1.5)
+send("gbm", 0.6); send("j", 0.3); send("\r", 1.5)
 expect("normal mode ignores typed letters (stays on first item)", session(), "alpha")
 
 send("\x02 ", 1.5)
