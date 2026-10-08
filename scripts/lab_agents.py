@@ -57,7 +57,7 @@ def database():
 
 def record(value,kind="state",pid=None,started=None,force=False):
     # Only bounded, purpose-built metadata is accepted; never raw hook payloads.
-    encoded=json.dumps({k:v for k,v in value.items() if k!="observedAt"},sort_keys=True)
+    encoded=json.dumps({k:v for k,v in value.items() if k not in ("observedAt","lastHook")},sort_keys=True)
     with database() as db:
         old=db.execute("SELECT signature,pid,started FROM sessions WHERE id=?",(value["id"],)).fetchone()
         if force or not old or old[0]!=encoded:
@@ -98,18 +98,31 @@ def hook(provider,event,payload,owner,pane=""):
     with database() as db:
         row=db.execute("SELECT payload FROM sessions WHERE id=?",(sid,)).fetchone()
     if row:value.update(json.loads(row[0]))
+    if event=="Notification" and payload.get("notification_type") not in ("permission_prompt","elicitation_dialog","idle_prompt"):return
+    prior_failure=value.get("attention")=="review failure"
     value.update(observedAt=now(),source="provider hook")
     if thread and not value.get("parentId"): value["runId"]=run_id
     value["activity"],value["attention"]=event_activity(event,payload)
+    if event=="Notification" and payload.get("notification_type")=="idle_prompt" and prior_failure:value["attention"]="review failure"
     value["summary"]={"Stop":"Turn finished; ready for input","agent_settled":"Turn finished; ready for input","Interrupt":"Interrupted by operator","SessionEnd":"Session ended","PermissionRequest":"Waiting for tool approval"}.get(event,event)
+    value["lastHook"]={"at":now(),"activity":value["activity"],"attention":value["attention"],"summary":value["summary"]}
     cwd=payload.get("cwd") or os.environ.get("PWD","")
     if cwd:value["project"]=Path(cwd).name[:160]
     if pane and os.environ.get("TMUX"):
         import agent_status
+        # TMUX/TMUX_PANE may be inherited long after a pane disappears. Only
+        # publish a location when the owner still belongs to that actual pane.
+        value["attachment"]=None
         try:
-            name=agent_status.run(["tmux","display-message","-p","-t",pane,"#{session_name}"])
-            value["attachment"]={"host":host_id(),"socket":os.environ["TMUX"].split(",")[0],"session":name,"pane":pane}
-        except Exception:pass
+            sock=os.environ["TMUX"].split(",")[0]
+            location=agent_status.run(["tmux","-S",sock,"display-message","-p","-t",pane,"#{session_name}\t#{pane_pid}"])
+            name,rootpid=location.split("\t",1)
+            if name and pid in agent_status.descendants(int(rootpid),agent_status.processes()):
+                value["attachment"]={"host":host_id(),"socket":sock,"session":name,"pane":pane}
+        except (OSError,ValueError,subprocess.SubprocessError):pass
+    import agent_status
+    command=agent_status.processes().get(pid,(0,"",""))[2]
+    if agent_status.is_codex_backend(command):value["role"]="backend"
     record(value,event,pid,started)
 
 
@@ -117,6 +130,8 @@ def collect_interactive():
     import agent_status
     table=agent_status.processes()
     observed=set()
+    located_clients={}
+    scanned_sockets=set()
     with database() as db:
         runners=[(json.loads(raw),pid) for raw,pid in db.execute("SELECT payload,pid FROM sessions WHERE json_extract(payload,'$.runner')='ouroboros' AND pid IS NOT NULL")]
 
@@ -129,23 +144,60 @@ def collect_interactive():
         except Exception:continue
         for line in lines:
             pane,pid,name,cwd,proxy,sock=line.split("\t",5)
+            scanned_sockets.add(sock)
             if proxy:continue
-            for child in agent_status.descendants(int(pid),table):
-                entry=table.get(child)
-                if not entry:continue
-                provider=agent_status.agent_name(entry[2])
-                if not provider:continue
+            candidates=agent_status.interactive_agents(int(pid),table)
+            terminal_activity=None
+            if len(candidates)==1:
+                try:
+                    terminal_activity=agent_status.screen_activity(agent_status.run(cmd+["capture-pane","-p","-t",pane,"-S","-20"]))
+                except (OSError,subprocess.SubprocessError):pass
+            for child in candidates:
+                entry=table[child];provider=agent_status.agent_name(entry[2])
                 sid=identity("session",provider,child,entry[1]);observed.add(sid)
+                if provider=="codex":located_clients[child]=sid
                 with database() as db:row=db.execute("SELECT payload FROM sessions WHERE id=?",(sid,)).fetchone()
                 value=json.loads(row[0]) if row else base(sid,sid,provider,"process observation")
-                value.update(observedAt=now(),project=Path(cwd).name[:160],attachment={"host":host_id(),"socket":sock,"session":name,"pane":pane})
+                value.update(observedAt=now(),project=Path(cwd).name[:160],attachment={"host":host_id(),"socket":sock,"session":name,"pane":pane},role="terminal")
                 if not row:
-                    value.update(summary="Agent process discovered; lifecycle hooks not yet observed",activity="unknown")
+                    value.update(summary="Agent detected; activity not available",activity="unknown")
+                if terminal_activity and terminal_activity[0]!="unknown":
+                    state,attention=terminal_activity
+                    background_work=state=="working" and attention=="background work"
+                    if background_work:attention=""
+                    hook=value.get("lastHook",{})
+                    hook_age=float("inf")
+                    try:hook_age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(hook.get("at","").replace("Z","+00:00"))).total_seconds()
+                    except (ValueError,TypeError):pass
+                    if state=="idle" and hook.get("activity") in ("working","starting","retrying","waiting"):
+                        # Claude keeps its input prompt visible during work.
+                        # A weak ready indicator cannot cancel a lifecycle event.
+                        state=hook["activity"] if hook_age<90 else "unknown"
+                        attention=hook.get("attention","") if hook_age<90 else ""
+                    # A generic ready footer must not erase a reported failure.
+                    if state=="idle" and value.get("attention")=="review failure":attention="review failure"
+                    value.update(activity=state,attention=attention,source="terminal indicator",summary={"working":"Waiting for background work" if background_work else "Working in terminal","idle":"Ready for input","waiting":"Waiting for "+attention,"unknown":"Agent detected; current activity not confirmed","starting":"Agent starting","retrying":"Agent retrying"}[state])
+                    if terminal_activity[0]=="idle" and state not in ("idle","unknown"):
+                        value.update(source="provider hook",summary=hook.get("summary","Lifecycle event"))
+                elif value.get("source")=="terminal indicator":
+                    value.update(activity="unknown",attention="",source="process observation",summary="Agent detected; terminal activity indicator unavailable")
                 for runner,runner_pid in runners:
                     if runner_pid in table and child in agent_status.descendants(runner_pid,table):
                         value.update(parentId=runner["id"],runId=runner["runId"],runner="ouroboros",role=runner["role"])
                         break
                 record(value,"discovered" if not row else "location",child,entry[1])
+                # Previously reported wrappers/helpers are retained as history only.
+                for helper in agent_status.descendants(child,table)-{child}:
+                    if helper not in table or not agent_status.agent_name(table[helper][2]):continue
+                    helper_id=identity("session",agent_status.agent_name(table[helper][2]),helper,table[helper][1])
+                    observed.add(helper_id)
+                    with database() as db:old=db.execute("SELECT payload FROM sessions WHERE id=?",(helper_id,)).fetchone()
+                    if old:
+                        previous=json.loads(old[0])
+                        if previous["activity"]!="stopped":
+                            previous.update(activity="stopped",attention="",summary="Represented by its parent terminal client",stopReason="Helper process grouped with parent",observedAt=now())
+                            record(previous,"helper_grouped",helper,table[helper][1])
+    backend_links=agent_status.codex_backend_links(table,located_clients)
     # Hooked sessions outside tmux remain observable too. Missing processes become stopped,
     # but no successful task outcome is inferred from their disappearance.
     with database() as db:rows=db.execute("SELECT payload,pid,started FROM sessions WHERE pid IS NOT NULL").fetchall()
@@ -153,7 +205,20 @@ def collect_interactive():
         value=json.loads(raw)
         if value["provider"]=="ouroboros" or value["id"] in observed:continue
         alive=pid in table and table[pid][1]==started
-        if alive:value["observedAt"]=now();record(value,"heartbeat",pid,started)
+        if alive:
+            if agent_status.is_codex_backend(table[pid][2]):
+                value["role"]="backend"
+                value["parentId"]=located_clients.get(backend_links.get(pid),"")
+            attachment=value.get("attachment")
+            if attachment:
+                if attachment.get("socket") not in scanned_sockets:
+                    # A failed/inaccessible server scan cannot confirm location.
+                    # Keep its last observation age instead of making it fresh.
+                    continue
+                value["attachment"]=None
+                record(dict(value,observedAt=now()),"location_lost",pid,started)
+            else:
+                value["observedAt"]=now();record(value,"heartbeat",pid,started)
         elif value["activity"]!="stopped":
             value.update(activity="stopped",attention="review exit",summary="Process ended without an observed session-end event",stopReason="Process disappeared; outcome unknown",observedAt=now())
             record(value,"process_exit",pid,started)

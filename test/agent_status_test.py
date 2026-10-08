@@ -31,6 +31,38 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(activity.event_state("SessionEnd", {}), "plain")
         self.assertIsNone(activity.event_state("Notification", {"notification_type": "unrelated"}))
 
+    def test_terminal_activity_distinguishes_work_idle_errors_and_unknown(self):
+        self.assertEqual(activity.screen_activity("• Working (4m 13s • esc to interrupt)"),("working",""))
+        self.assertEqual(activity.screen_activity("esc to interrupt\nDo you want to proceed?"),("waiting","approval"))
+        self.assertEqual(activity.screen_activity("● API Error: Unable to connect to API: SSL certificate verification failed\n❯\nshift+tab to cycle"),("waiting","connection error"))
+        self.assertEqual(activity.screen_activity("❯\n? for shortcuts"),("idle",""))
+        self.assertEqual(activity.screen_activity("✻ Germinating… (15m 16s · ↓ 71.4k tokens)\n❯\nshift+tab to cycle"),("working",""))
+        self.assertEqual(activity.screen_activity("✻ Crunched for 1m 5s · done 6:00 AM\n❯\nshift+tab to cycle"),("idle",""))
+        self.assertEqual(activity.screen_activity("some output without UI indicators"),("unknown",""))
+    def test_background_work_is_active_until_live_footer_clears(self):
+        footer = "❯\n⏵⏵ bypass permissions on · 2 shells · ← for agents"
+        self.assertEqual(activity.screen_activity(footer), ("working", "background work"))
+        self.assertEqual(activity.screen_activity(footer.replace("2 shells", "1 task")), ("working", "background work"))
+        self.assertEqual(activity.screen_activity(footer.replace("2 shells", "0 shells")), ("idle", ""))
+        self.assertEqual(activity.screen_activity("1 shell still running\n❯\n⏵⏵ bypass permissions on"), ("idle", ""))
+        self.assertEqual(activity.screen_activity(footer + "\nDo you want to proceed?"), ("waiting", "approval"))
+        self.assertEqual(activity.screen_activity("✻ Working… (3s · ↓ 10 tokens)\n" + footer), ("working", ""))
+
+    def test_interactive_client_does_not_count_its_backend_helpers(self):
+        table={1:(0,"shell","zsh"),2:(1,"client","codex"),3:(2,"backend","/opt/codex app-server --listen unix://"),4:(2,"loop","/opt/codex app-server daemon pid-update-loop")}
+        self.assertEqual(activity.interactive_agents(1,table),{2})
+    def test_backend_socket_link_requires_an_actual_unique_peer(self):
+        output="codex 10 theo 18u unix 0xclient 0t0 ->0xserver\ncodex 20 theo 44u unix 0xserver 0t0 /tmp/socket\n"
+        self.assertEqual(activity.unix_peer_links(output,{10},{20}),{20:10})
+        self.assertEqual(activity.unix_peer_links(output+"codex 11 theo 19u unix 0xother 0t0 ->0xserver\n",{10,11},{20}),{})
+        self.assertEqual(activity.unix_peer_links("codex 10 theo 18u unix 0xclient 0t0 /tmp/socket",{10},{20}),{})
+
+    def test_process_arguments_are_not_shell_escaped(self):
+        self.assertEqual(activity.agent_name("claude --dangerously-skip-permissions Check the project's status"),"claude")
+        self.assertEqual(activity.agent_name('codex a prompt with an unmatched "quote'),"codex")
+        self.assertFalse(activity.is_codex_backend("codex explain app-server"))
+        self.assertTrue(activity.is_codex_backend("/opt/codex app-server --listen unix://"))
+
     def test_priority(self):
         self.assertEqual(activity.strongest(["plain", "working", "waiting"]), "waiting")
         self.assertEqual(activity.strongest(["plain", "working"]), "working")
