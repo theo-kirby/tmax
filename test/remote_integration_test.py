@@ -71,6 +71,7 @@ def main():
             tmux("-f", "/dev/null", "new-session", "-d", "-s", "local-test", "-x", "120", "-y", "40")
             os.environ["TMAX_STATE_DIR"] = directory
             os.environ["TMAX_REMOTES_FILE"] = str(config)
+            os.environ["TMAX_CONFIG"] = str(config.parent / "tmax.conf")
             os.environ["TMUX"] = tmux("display-message", "-p", "#{socket_path},#{pid},0")
             sys.path.insert(0, str(ROOT / "scripts"))
             import remote as remote_module
@@ -83,6 +84,7 @@ def main():
             remote("-f", "/dev/null", "new-session", "-d", "-s", "remote-test")
             tmux("set-environment", "-g", "TMAX_STATE_DIR", directory)
             tmux("set-environment", "-g", "TMAX_REMOTES_FILE", str(config))
+            tmux("set-environment", "-g", "TMAX_CONFIG", str(config.parent / "tmax.conf"))
             tmux("set-option", "-g", "prefix", "C-a")
             tmux("set-hook", "-g", "client-session-changed[0]", "set-option -g @unrelated-hook preserved")
             tmux("run-shell", str(ROOT / "tmax.tmux"))

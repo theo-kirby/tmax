@@ -57,7 +57,7 @@ tmux source-file ~/.tmux.conf
 
 No plugin manager is needed. (It also works with TPM, which runs every
 `*.tmux` file in a plugin folder.) Settings go **before** the `run-shell`
-line; see [Options](#options).
+line; see [Settings](#settings).
 
 For remote machines, copy `remotes.example.json` to `remotes.json` and edit
 it; see [Remote computers](#remote-computers). A fresh checkout makes no
@@ -90,6 +90,29 @@ With the preview open and a session selected, press `s` to hide the list and
 fill the popup with the preview; press `s` again to restore the split view.
 In full preview, `h` / `l` still cycle windows, `p` returns to the list with the
 preview hidden, `Enter` selects the session, and `q` / `Esc` closes the popup.
+
+The preview currently shows the **agent dial** instead of the window
+(experimental): a terminal take on the lab dashboard's Crown home. A smooth
+Braille circle around an HH:MM:SS clock is split into one arc per agent, with
+gaps between sessions, in each session's dashboard colour, and each session is
+numbered just outside the ring; press that number in normal mode to highlight its row, then Enter to go there. Arc thickness shows state: working arcs ripple
+outward, waiting ones sit thicker, idle ones are a darker line, unknown or
+stale ones are dotted grey, and a diamond marks agents that need you. The
+selected session (or every session of a selected host) thickens and shows its
+number, name and status under the clock while the rest dim. It reads the
+reporter's cached lab overview plus this host's own records, and assumes a
+dark terminal background. The `[dial]` settings below change its labels,
+seconds and frame rate.
+With `footer = usage`, the bottom of the list shows a btop-style meter per
+provider in `[usage]`: the signed-in account's weekly usage, 0–100% on a
+green-to-red bar. Claude Code's login comes from the macOS Keychain (or
+`~/.claude/.credentials.json`) and Codex's from `~/.codex/auth.json`; each
+token goes only to that provider's own usage endpoint and is never refreshed
+by tmax, so an expired login shows "sign in" until the CLI renews it. Meters
+open from a cache (percentages only, in the state directory) and refresh in
+the background. `?` swaps the key legend in and back.
+Set `preview = pane` (see [Settings](#settings)) for the window preview. Try it outside the
+switcher with `python3 scripts/agent_view.py` (add `--demo` for sample agents).
 
 ```
 ╭─ sessions ─────────────────────────────────╮
@@ -141,6 +164,7 @@ back to normal mode with the filter kept.
 | normal | `H`               | show only the selected host / show all hosts  |
 | normal | `f`               | star / unstar the current session             |
 | normal | `p`               | show / hide the session preview               |
+| normal | `1`–`9`         | highlight that session as numbered on the agent dial (Enter goes there) |
 | normal | `s`               | toggle list / full preview (requires an open preview and a selected session) |
 | normal | `i` `/`           | insert mode                                  |
 | normal | `L`               | lock the selected remote host |
@@ -367,20 +391,59 @@ without discovering remote sessions. Already-created local proxies for remote
 sessions still appear as `host/session` entries. Use `prefix + Space` to
 browse and connect to remote sessions.
 
-## Options
+## Settings
 
-Put these in `~/.tmux.conf` **before** the `run-shell` line. Defaults shown.
+Everything lives in one commented file, `~/.config/tmax/tmax.conf` (or
+`$TMAX_CONFIG`). Create it from your current setup, including existing tmux
+options, `remotes.json` and the reporter's `agents.json`:
 
-```tmux
-# switcher
-set -g @tmax-switch-key    "Space"
-set -g @tmax-switch-width  "75%"
-set -g @tmax-switch-height "65%"
-set -g @tmax-switch-hosts  "on"     # on: all hosts, off: local only, or a host key
+```sh
+python3 ~/tmax/scripts/settings.py init     # writes ~/.config/tmax/tmax.conf
+python3 ~/tmax/scripts/settings.py show     # effective settings, defaults marked
 ```
 
-Environment variables (set with `tmux set-environment -g`): `TMAX_REMOTES_FILE`
-(hosts file) and `TMAX_STATE_DIR` (switcher preferences and state).
+Every line is optional; delete one to get its default. Reload tmux
+(`tmux source-file ~/.tmux.conf`) after changing `[switcher]`; the dial and
+hosts pick changes up the next time the switcher opens.
+
+```ini
+[switcher]
+key = Space          # after the prefix
+width = 75%
+height = 65%
+hosts = all          # all, local, or one host name (H toggles while open)
+preview = agents     # agents: the agent dial, pane: the selected window
+footer = legend      # under the list: usage (meters), legend (key help) or off; ? swaps in the legend
+
+[dial]
+labels = numbers     # around the ring: numbers, names, or off
+seconds = on
+fps = 12             # while agents work; otherwise the dial redraws once a second
+
+[usage]
+providers = claude, codex   # weekly usage meters for footer = usage, in this order
+refresh = 300               # seconds between fetches while the switcher is open
+
+[host local]
+label = this machine
+
+[host server]
+destination = server # SSH destination; also: tmux, socket, colour, agent_host
+label = big server
+
+[agents]             # the agent reporter; lists are comma-separated
+host = laptop
+endpoint = https://lab.example/api/agents/ingest
+token_file = ~/.config/tmax/agent-keys/token
+```
+
+(The real file keeps comments on their own lines; trailing `#` comments are
+shown here for brevity.) Anything the file leaves out falls back to the older
+places: `@tmax-switch-*` tmux options set before the `run-shell` line,
+`remotes.json` when there are no `[host ...]` sections, and `agents.json` for
+reporter keys. `TMAX_REMOTES_FILE` and `TMAX_AGENT_CONFIG`, when set, override
+the file. Other environment variables (set with `tmux set-environment -g`):
+`TMAX_STATE_DIR` (switcher preferences and state).
 
 ## Files
 

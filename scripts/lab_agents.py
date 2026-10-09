@@ -27,8 +27,15 @@ def state_dir():
 
 def config():
     path=Path(os.environ.get("TMAX_AGENT_CONFIG", str(Path.home()/".config/tmax/agents.json")))
-    try:return json.loads(path.read_text())
-    except FileNotFoundError:return {}
+    try:value=json.loads(path.read_text())
+    except FileNotFoundError:value={}
+    # tmax.conf's [agents] wins over agents.json unless a config file is named explicitly.
+    if "TMAX_AGENT_CONFIG" not in os.environ:
+        try:
+            import settings
+            value.update(settings.agents())
+        except ImportError:pass
+    return value
 
 
 def host_id():

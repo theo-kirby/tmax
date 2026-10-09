@@ -6,6 +6,10 @@
 
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ~/.config/tmax/tmax.conf: values written there become tmux options before
+# anything reads them; options it leaves out keep their ~/.tmux.conf values.
+python3 "$CURRENT_DIR/scripts/settings.py" apply
+
 get_opt() {
   local value
   value="$(tmux show-option -gqv "$1")"

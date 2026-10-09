@@ -4,6 +4,7 @@ import argparse
 import auth
 import agent_status
 import lab_agents
+import settings
 import contextlib
 import fcntl
 import hashlib
@@ -13,6 +14,7 @@ from pathlib import Path
 import re
 import select
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -42,6 +44,13 @@ def setup():
 
 
 def config():
+    """Hosts from tmax.conf's [host NAME] sections, else remotes.json.
+
+    An explicit TMAX_REMOTES_FILE always wins, so tests and one-off setups stay isolated."""
+    if "TMAX_REMOTES_FILE" not in os.environ:
+        found = settings.hosts()
+        if found is not None:
+            return found
     return json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
 
 
@@ -251,7 +260,10 @@ def discover():
 
 
 # Host name colours: terminal colours, local first, then remote hosts in remotes.json order. A "colour" per entry overrides.
-HOST_COLOURS = ["blue", "magenta", "red", "yellow"]
+# Badge colours by host position (0 = local). Each host gets its own; past the
+# end of this list, colours keep coming from tmux's 256-colour cube.
+HOST_COLOURS = ["blue", "magenta", "red", "yellow", "cyan", "colour208", "colour141", "colour37",
+                "colour168", "colour150", "colour110", "colour180"]
 ANSI = {"black": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "white": 7}
 
 
@@ -274,7 +286,12 @@ def tint(text, colour):
 
 def host_colour(host, position):
     """The entry's own "colour", else the palette colour for its position (0 = local)."""
-    return config().get(host, {}).get("colour") or HOST_COLOURS[position % len(HOST_COLOURS)]
+    if config().get(host, {}).get("colour"):
+        return config()[host]["colour"]
+    if position < len(HOST_COLOURS):
+        return HOST_COLOURS[position]
+    # Step through the bright part of the 6x6x6 cube (colours 16-231) without repeating.
+    return "colour" + str(16 + (position * 47) % 216)
 
 
 def switch_hosts_focus():
@@ -350,11 +367,22 @@ def switch_attention():
     save_switch_state(data)
 
 
+def agent_host(host):
+    """The lab reporter's name for a switcher host key."""
+    if host == "local":
+        return lab_agents.host_id()
+    cfg = hosts().get(host, {})
+    if cfg.get("agent_host"):
+        return cfg["agent_host"]
+    # An SSH alias or hostname names the reporter's host; an IP address cannot.
+    address = cfg.get("destination", host).split("@")[-1]
+    return host if re.fullmatch(r"[0-9.]+|\[?[0-9a-fA-F:]+\]?", address) else address.split(".")[0]
+
+
 def switch_agent_details(kind, host, sid):
     if kind != "session": return
     name = local("display-message", "-p", "-t", sid, "#{session_name}", check=False)
-    cfg = hosts().get(host, {})
-    canonical = lab_agents.host_id() if host == "local" else cfg.get("agent_host", cfg.get("destination", host).split("@")[-1].split(".")[0])
+    canonical = agent_host(host)
     if host != "local" and name.startswith(host + "/"): name = name[len(host)+1:]
     try:
         data = json.loads((lab_agents.state_dir()/"overview.json").read_text())
@@ -403,6 +431,32 @@ def switch_enter(kind, host):
         print("reload-sync(" + shlex.join(SELF + ["switch-list"]) + ")")
     else:
         print("accept")
+
+
+def switch_number(number):
+    """fzf transform action: highlight the session numbered on the agent dial.
+
+    The dial numbers sessions with agents clockwise from the top; this moves
+    the cursor to that session's row, so Enter then goes there."""
+    import agent_view
+    groups = agent_view.hierarchy(agent_view.load_sessions())
+    index = int(number) - 1
+    if not 0 <= index < len(groups) or os.environ.get("FZF_QUERY"):
+        return
+    group = groups[index]
+    try:
+        lines = Path(os.environ["TMAX_SWITCH_SNAPSHOT"]).read_text().splitlines()
+    except (KeyError, OSError):
+        return
+    for position, line in enumerate(lines, 1):
+        fields = line.split("\t")
+        if len(fields) < 7 or fields[5] != "session":
+            continue
+        shown = fields[2].strip()
+        shown = shown[2:] if shown.startswith("★ ") else shown
+        if shown == group["name"] and agent_host(fields[6]) == group["host"]:
+            print("pos(" + str(position) + ")")
+            return
 
 
 def switch_session(action, kind, host, sid):
@@ -564,12 +618,60 @@ def switch_preview_cycle(sid, kind, direction):
         switch_preview_window(sid, int(direction))
 
 
+def switch_preview_mode():
+    """@tmax-switch-preview: "agents" (the agent dial, default) or "pane"."""
+    return "pane" if local("show-options", "-gqv", "@tmax-switch-preview", check=False) == "pane" else "agents"
+
+
+class AgentPreview:
+    """The agent dial with the selected session or host emphasised."""
+
+    def __init__(self, sid, kind):
+        import agent_view
+        self.view, self.kind, self.loaded, self.groups = agent_view, kind, 0.0, []
+        if kind == "group":
+            host = sid.split(":", 1)[1]
+            self.name, self.title = None, label(host)
+        else:
+            info = local("display-message", "-p", "-t", sid, "#{@tmax-remote-host}\t#{session_name}\t#{@tmax-remote-name}", check=False)
+            host, name, title = (info.split("\t") + ["", "", ""])[:3] if info else ("", "", "")
+            host = host or "local"
+            self.name = title or (name[len(host) + 1:] if host != "local" and name.startswith(host + "/") else name)
+            self.title = None
+        self.host = agent_host(host)
+        conf = settings.load()
+        self.fps = max(1.0, min(30.0, settings.number("dial", "fps", conf)))
+        self.labels, self.seconds = settings.get("dial", "labels", conf), settings.flag("dial", "seconds", conf)
+
+    def frame(self, columns, rows):
+        if time.time() - self.loaded > 2:
+            self.groups, self.loaded = self.view.hierarchy(self.view.load_sessions()), time.time()
+        selected = [g["id"] for g in self.groups if g["host"] == self.host and self.name in (None, g["name"])]
+        title = self.title or (None if selected else self.name.lower())
+        return self.view.render(self.groups, columns, rows, selected=selected, title=title,
+                                labels=self.labels, seconds=self.seconds)
+
+    def moving(self):
+        return any(a["state"] in self.view.MOVING for g in self.groups for a in g["agents"])
+
+
 def switch_preview(sid, kind, *flags):
-    """Continuously render the selected window's active pane for fzf's preview area."""
+    """Continuously render fzf's preview area: the agent dial, or the selected window's active pane."""
+    once = "--once" in flags
+    if switch_preview_mode() == "agents":
+        preview = AgentPreview(sid, kind)
+        while True:
+            columns = max(1, int(os.environ.get("FZF_PREVIEW_COLUMNS", "80")))
+            rows = max(1, int(os.environ.get("FZF_PREVIEW_LINES", "24")))
+            sys.stdout.write("\x1b[H\x1b[2J" + preview.frame(columns, rows))
+            sys.stdout.flush()
+            if once:
+                return
+            # Animate only while something works; otherwise just keep the clock current.
+            time.sleep(1 / preview.fps if preview.moving() else 1)
     if kind != "session":
         print("Select a session to preview its active window.")
         return
-    once = "--once" in flags
     while True:
         columns = max(1, int(os.environ.get("FZF_PREVIEW_COLUMNS", "80")))
         rows = max(1, int(os.environ.get("FZF_PREVIEW_LINES", "24")) - 2)
@@ -667,18 +769,10 @@ def switch_rows(refresh_hosts=False):
         states = [state if state in DOT_COLOURS else "plain" for state in states]
         session_states[sid] = agent_status.strongest(states)
         detail = activity_dots(states)
-        cfg = hosts().get(host, {})
-        canonical = lab_agents.host_id() if host == "local" else cfg.get("agent_host", cfg.get("destination", host).split("@")[-1].split(".")[0])
+        canonical = agent_host(host)
         agent = context.get(canonical, {}).get(shown, {})
         if state.get("attention") and not agent.get("attention"):
             continue
-        if agent.get("text"):
-            detail += "  " + clean(agent["text"])
-            try:
-                import datetime
-                age = time.time() - datetime.datetime.fromisoformat(agent["observedAt"].replace("Z", "+00:00")).timestamp()
-                if age > 90: detail += " [stale]"
-            except (ValueError, KeyError): pass
         badge_position = 0 if host == "local" else 1 + order.get(host, len(order))
         badge = tint(label(host), host_colour(host, badge_position))
         identity = ("local:" + name) if host == "local" else ("remote:" + host + ":" + shown)
@@ -758,24 +852,59 @@ SWITCH_TYPING_KEYS = [chr(c) for c in range(ord("a"), ord("z") + 1)] + [chr(c) f
     + [str(d) for d in range(10)] + ["-", "_", ".", "space"]
 # Keys whose fzf default edits the query: unbound in normal mode, restored in insert mode.
 SWITCH_EDIT_KEYS = ["backspace", "ctrl-h", "delete"]
-SWITCH_LEGEND = ("j/k move · h/l windows · p preview · s list · c create · x close · a attention · d agent\n"
+SWITCH_LEGEND = ("j/k move · 1-9 dial session · h/l windows · p preview · s list · c create · x close · a attention · d agent\n"
                  "g/G first/last · Ctrl-d/u page · L lock · i / filter · Enter select\n"
                  "Enter on host: collapse · H only this host · f star · q/Esc close · ? help")
 SWITCH_NORMAL_KEYS = {"a": "toggle-attention", "d": "agent-details", "j": "down", "k": "up", "g": "first", "G": "last", "ctrl-d": "half-page-down", "ctrl-u": "half-page-up",
                       "q": "abort", "i": "enter-insert", "/": "enter-insert", "c": "create-session", "x": "close-session", "H": "toggle-hosts",
                       "h": "preview-left", "l": "preview-right", "?": "toggle-footer",
                       "s": "toggle-list",
-                      "f": "toggle-favorite", "p": "toggle-preview", "L": "lock-host"}
+                      "f": "toggle-favorite", "p": "toggle-preview", "L": "lock-host",
+                      **{str(n): "jump-" + str(n) for n in range(1, 10)}}
+
+
+def switch_footer_text(toggled=False, refresh=False):
+    """The popup's footer. [switcher] footer is usage (provider meters), legend
+    or off; ? swaps the legend in (or, for legend, hides it)."""
+    mode = settings.get("switcher", "footer")
+    primary = mode if mode in ("usage", "off") else "legend"
+    shown = ("" if primary == "legend" else "legend") if toggled else primary
+    if shown == "legend":
+        return SWITCH_LEGEND
+    if shown != "usage":
+        return ""
+    import usage
+    providers = [p.strip() for p in settings.get("usage", "providers").split(",") if p.strip()]
+    data = usage.refresh(providers, settings.number("usage", "refresh")) if refresh else None
+    try:
+        columns = int(os.environ["FZF_COLUMNS"])
+    except (KeyError, ValueError):
+        columns = shutil.get_terminal_size((100, 30)).columns
+    try:
+        visible = json.loads(Path(os.environ["TMAX_SWITCH_SNAPSHOT"]).with_suffix(".view").read_text())["visible"]
+    except (KeyError, OSError, ValueError):
+        visible = True
+    # The footer sits under the list, which shares the popup with a 50% preview.
+    # Leave room for fzf's two-column indent, the border and its overflow marker.
+    return usage.meters(providers, (columns // 2 if visible else columns) - 6, data)
+
+
+def switch_footer():
+    """fzf bg-transform-footer action: the footer, refreshing stale usage first."""
+    path = Path(os.environ["TMAX_SWITCH_SNAPSHOT"]).with_suffix(".help")
+    print(switch_footer_text(path.exists(), refresh=True))
 
 
 def switch_help():
-    """Toggle the bottom legend for this popup."""
+    """Toggle between the footer and its alternate for this popup."""
     path = Path(os.environ["TMAX_SWITCH_SNAPSHOT"]).with_suffix(".help")
     if path.exists():
         path.unlink()
-        print(SWITCH_LEGEND)
     else:
         path.touch()
+    text = switch_footer_text(path.exists())
+    if text:
+        print(text)
 
 
 def switch_preview_full(sid):
@@ -787,12 +916,19 @@ def switch_preview_full(sid):
         try:
             tty.setraw(fd)
             terminal.write(b"\x1b[?1049h\x1b[?25l")
+            agents = AgentPreview(sid, "session") if switch_preview_mode() == "agents" else None
             while True:
                 columns, lines = os.get_terminal_size(fd)
-                env = dict(os.environ, FZF_PREVIEW_COLUMNS=str(columns), FZF_PREVIEW_LINES=str(lines))
-                frame = subprocess.check_output(SELF + ["switch-preview", sid, "session", "--once"], env=env)
-                terminal.write(frame.replace(b"\n", b"\r\n").rstrip(b"\r\n"))
-                if not select.select([fd], [], [], 1)[0]:
+                if agents:
+                    # Rendered in process so the dial animates; one synchronized
+                    # update per frame, overwriting in place without a clear.
+                    frame = agents.frame(columns, lines).replace("\n", "\x1b[K\r\n")
+                    terminal.write(("\x1b[?2026h\x1b[H" + frame + "\x1b[K\x1b[J\x1b[?2026l").encode())
+                else:
+                    env = dict(os.environ, FZF_PREVIEW_COLUMNS=str(columns), FZF_PREVIEW_LINES=str(lines))
+                    frame = subprocess.check_output(SELF + ["switch-preview", sid, "session", "--once"], env=env)
+                    terminal.write(frame.replace(b"\n", b"\r\n").rstrip(b"\r\n"))
+                if not select.select([fd], [], [], 1 / agents.fps if agents and agents.moving() else 1)[0]:
                     continue
                 pressed = os.read(fd, 1)
                 if pressed in (b"h", b"l"):
@@ -912,19 +1048,24 @@ def switch(client):
                "toggle-footer": "transform-footer(" + shlex.join(SELF + ["switch-help"]) + ")",
                "preview-left": cycle_preview + "-1)+refresh-preview",
                "preview-right": cycle_preview + "1)+refresh-preview",
-               "toggle-hosts": toggle_hosts, "toggle-favorite": toggle_favorite, "lock-host": lock_host}
+               "toggle-hosts": toggle_hosts, "toggle-favorite": toggle_favorite, "lock-host": lock_host,
+               **{"jump-" + str(n): "transform:" + shlex.join(SELF + ["switch-number", str(n)]) for n in range(1, 10)}}
     binds += [key + ":" + special.get(action, action)
               for key, action in SWITCH_NORMAL_KEYS.items()]
     binds.append("enter:" + enter)
     binds.append("esc:transform:[ \"$FZF_PROMPT\" = \"insert> \" ] && echo " + shlex.quote(to_normal) + " || echo abort")
     binds.append("load:bg-transform(" + refresh_cmd + " --initial)+unbind(load)")
-    binds.append("every(2):bg-transform(" + refresh_cmd + ")")
+    # Usage meters start from the cache and refresh in the background.
+    footer_cmd = "+bg-transform-footer(" + shlex.join(SELF + ["switch-footer"]) + ")" \
+        if settings.get("switcher", "footer") == "usage" else ""
+    binds[0] += footer_cmd
+    binds.append("every(2):bg-transform(" + refresh_cmd + ")" + footer_cmd)
     preview = shlex.join(SELF + ["switch-preview"]) + " {1} {6}"
     command = [fzf, "--ansi", "--reverse", "--no-multi", "--cycle", "--info=inline-right",
                "--info-command", shlex.join(SELF + ["switch-status"]), "--print-query", "--prompt", "normal> ",
                "--delimiter", "\t", "--with-nth", "3,4,5", "--nth", "1,2", "--tabstop", "1", "--track", "--id-nth", "1",
                "--preview", preview, "--preview-window", "right,50%,border-left,nowrap",
-               "--footer", SWITCH_LEGEND]
+               "--footer", switch_footer_text()]
     for bind in binds:
         command += ["--bind", bind]
     # No gutter bar: fzf would otherwise draw a bar in every row's first column in the highlight colour.
@@ -1504,7 +1645,7 @@ def auth_guard(host, token):
 def main():
     setup()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["switch-attention", "switch-agent-details", "unlock", "lock", "auth-guard", "refresh", "attach", "watch", "view", "action", "install", "prompt", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview", "switch-preview-cycle", "switch-help", "switch-view", "switch-preview-full", "switch-session", "control-serve"])
+    parser.add_argument("command", choices=["switch-attention", "switch-agent-details", "unlock", "lock", "auth-guard", "refresh", "attach", "watch", "view", "action", "install", "prompt", "activate", "switch", "switch-list", "switch-refresh", "switch-hosts", "switch-host", "switch-favorite", "switch-enter", "switch-status", "switch-preview", "switch-preview-cycle", "switch-help", "switch-view", "switch-preview-full", "switch-session", "switch-number", "switch-footer", "control-serve"])
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "action":

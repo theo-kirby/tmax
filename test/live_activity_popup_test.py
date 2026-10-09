@@ -28,7 +28,7 @@ def main():
         binary.symlink_to("/bin/sleep")
         config = directory / "hosts.json"
         config.write_text("{}")
-        env = dict(os.environ, TMAX_STATE_DIR=str(directory), TMAX_REMOTES_FILE=str(config))
+        env = dict(os.environ, TMAX_STATE_DIR=str(directory), TMAX_REMOTES_FILE=str(config), TMAX_CONFIG=str(config.parent / "tmax.conf"))
 
         def tmux(*args):
             return subprocess.check_output(["tmux", "-L", SOCKET, *args], env=env, text=True).strip()
@@ -84,7 +84,7 @@ def main():
         try:
             tmux("-f", "/dev/null", "new-session", "-d", "-s", "work", "-x", "120", "-y", "40")
             tmux("set-option", "-as", "terminal-features", ",xterm-256color:RGB")
-            for key in ["TMAX_STATE_DIR", "TMAX_REMOTES_FILE"]:
+            for key in ["TMAX_STATE_DIR", "TMAX_REMOTES_FILE", "TMAX_CONFIG"]:
                 tmux("set-environment", "-g", key, env[key])
             pane = tmux("new-window", "-d", "-t", "work:", "-P", "-F", "#{pane_id}", shlex.join([str(binary), "90"]))
             env["TMUX"] = tmux("display-message", "-p", "#{socket_path},#{pid},0")

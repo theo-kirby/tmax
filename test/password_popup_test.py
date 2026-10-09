@@ -65,7 +65,7 @@ sys.exit(1)
         config = directory / "hosts.json"
         config.write_text('{"fixture":{"destination":"fixture","label":"fixture host"}}')
         env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
-                   TMAX_STATE_DIR=str(directory), TMAX_REMOTES_FILE=str(config))
+                   TMAX_STATE_DIR=str(directory), TMAX_REMOTES_FILE=str(config), TMAX_CONFIG=str(config.parent / "tmax.conf"))
         output = bytearray()
 
         def tmux(*args):
@@ -84,7 +84,7 @@ sys.exit(1)
 
         try:
             tmux("-f", "/dev/null", "new-session", "-d", "-s", "local", "-x", "120", "-y", "40")
-            for name in ["PATH", "TMAX_STATE_DIR", "TMAX_REMOTES_FILE"]:
+            for name in ["PATH", "TMAX_STATE_DIR", "TMAX_REMOTES_FILE", "TMAX_CONFIG"]:
                 tmux("set-environment", "-g", name, env[name])
             tmux("run-shell", str(ROOT / "tmax.tmux"))
             env["TMUX"] = tmux("display-message", "-p", "#{socket_path},#{pid},0")

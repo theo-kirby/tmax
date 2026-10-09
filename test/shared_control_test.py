@@ -38,7 +38,7 @@ os.execvp(command[0], command)
         fake.chmod(0o700)
         config = directory / "hosts.json"
         config.write_text(json.dumps({"fixture": {"destination": "fixture", "socket": remote_socket}}))
-        os.environ.update(TMAX_STATE_DIR=str(directory), TMAX_REMOTES_FILE=str(config),
+        os.environ.update(TMAX_STATE_DIR=str(directory), TMAX_REMOTES_FILE=str(config), TMAX_CONFIG=str(config.parent / "tmax.conf"),
                           TMAX_TEST_SSH_LOG=str(directory / "channels"), PATH=str(directory) + os.pathsep + os.environ["PATH"])
 
         def tmux(socket, *args):
@@ -62,7 +62,7 @@ os.execvp(command[0], command)
             for _ in range(11):
                 tmux(remote_socket, "new-window", "-d", "-t", "work:")
             os.environ["TMUX"] = tmux(local_socket, "display-message", "-p", "#{socket_path},#{pid},0")
-            for name in ["TMAX_STATE_DIR", "TMAX_REMOTES_FILE", "TMAX_TEST_SSH_LOG", "PATH"]:
+            for name in ["TMAX_STATE_DIR", "TMAX_REMOTES_FILE", "TMAX_CONFIG", "TMAX_TEST_SSH_LOG", "PATH"]:
                 tmux(local_socket, "set-environment", "-g", name, os.environ[name])
             sys.path.insert(0, str(ROOT / "scripts"))
             import remote

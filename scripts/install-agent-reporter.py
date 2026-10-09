@@ -17,7 +17,7 @@ def main():
     if not cfg.get("host") or not cfg.get("endpoint") or not Path(cfg.get("tokenFile","")).expanduser().is_file():raise SystemExit("Host, endpoint and existing private tokenFile required")
     os.umask(0o077)
     dest=Path.home()/".local/share/tmax";dest.mkdir(parents=True,exist_ok=True)
-    for name in ("agent_status.py","lab_agents.py"):
+    for name in ("agent_status.py","lab_agents.py","settings.py"):
         shutil.copy2(Path(__file__).parent/name,dest/name)
     target=Path.home()/".config/tmax/agents.json";target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text(json.dumps(cfg,indent=2)+"\n");target.chmod(0o600)

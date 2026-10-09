@@ -28,6 +28,8 @@ if not shutil.which("fzf"):
 subprocess.run(["tmux", "-L", SOCK, "kill-server"], capture_output=True)
 t("-f", "/dev/null", "new-session", "-d", "-s", "alpha", "-x", "120", "-y", "40")
 t("set-option", "-s", "escape-time", "10")
+# These cases cover the pane preview; the agent dial has its own tests.
+t("set-option", "-g", "@tmax-switch-preview", "pane")
 t("new-session", "-d", "-s", "beta", "-x", "120", "-y", "40")
 t("new-session", "-d", "-s", "gamma", "-x", "120", "-y", "40")
 t("new-window", "-d", "-t", "beta:")
@@ -35,6 +37,17 @@ t("set-environment", "-g", "TMAX_STATE_DIR", STATE)
 config = os.path.join(STATE, "remotes.json")
 with open(config, "w") as f: f.write('{"local": {"label": "this box"}, "srv": {"destination": "nowhere.invalid", "label": "big server"}}')
 t("set-environment", "-g", "TMAX_REMOTES_FILE", config)
+# Keep the user's own ~/.config/tmax/tmax.conf out of the test server.
+t("set-environment", "-g", "TMAX_CONFIG", os.path.join(STATE, "tmax.conf"))
+# One agent, in gamma: the agent dial numbers it 1.
+agents_state = os.path.join(STATE, "agents")
+os.makedirs(agents_state)
+with open(os.path.join(STATE, "agents.json"), "w") as f: f.write('{"host": "fixture"}')
+with open(os.path.join(agents_state, "overview.json"), "w") as f:
+    json.dump({"sessions": [{"id": "a", "runId": "a", "host": "fixture", "provider": "claude", "activity": "working",
+                             "observedAt": "2099-01-01T00:00:00Z", "attachment": {"host": "fixture", "socket": "s", "session": "gamma", "pane": "%1"}}]}, f)
+t("set-environment", "-g", "TMAX_AGENT_STATE", agents_state)
+t("set-environment", "-g", "TMAX_AGENT_CONFIG", os.path.join(STATE, "agents.json"))
 t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
 expect("s opens the stock local tree", t("list-keys", "-T", "prefix", "s").split(" s ", 1)[-1], "choose-tree -Zs")
 binding = t("list-keys", "-T", "prefix", "Space")
@@ -47,6 +60,7 @@ t("run-shell", os.path.join(HERE, "..", "tmax.tmux"))
 expect("plugin reload does not rewrap bindings", t("list-keys", "-T", "prefix", ","), rename_binding)
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 os.environ["TMAX_REMOTES_FILE"] = config   # read when the module loads
+os.environ["TMAX_CONFIG"] = os.path.join(STATE, "tmax.conf")
 os.environ["TMAX_STATE_DIR"] = STATE
 import remote
 expect("preview clips rows and follows bottom", remote.fit_switch_preview("top\n0123456789ABCD\ncurrent\nlast\n\n", 8, 3),
@@ -326,6 +340,17 @@ expect("q keeps the session", session(), "delta")
 send("\x02 ", 1.5)
 send("i", 0.4); send("alp", 1.0); send("\r", 1.5)
 expect("back to alpha", session(), "alpha")
+
+send("\x02 ", 1.5)
+send("2", 0.8)                  # no second session on the dial: nothing happens
+send("1", 0.8)
+expect("1 alone only highlights, staying put", session(), "alpha")
+send("\r", 1.5)
+expect("1 then Enter goes to the dial's first session", session(), "gamma")
+
+send("\x02 ", 1.5)
+send("i", 0.4); send("alp", 1.0); send("\r", 1.5)
+expect("back to alpha after the jump", session(), "alpha")
 
 os.kill(pid, 15)
 subprocess.run(["tmux", "-L", SOCK, "kill-server"], capture_output=True)
