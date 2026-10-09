@@ -93,7 +93,7 @@ expect("local host heading", [rows[0].split("\t")[5], heading, "this box" in hea
 preview = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"),
                           "switch-preview", session_rows[0].split("\t")[0], "session", "--once"],
                          capture_output=True, text=True, env=env).stdout
-expect("selected session preview", ["alpha" in preview, "0:" in preview, "\x1b[2J" in preview], [True, True, True])
+expect("selected session preview", ["alpha" in preview, "0:" in preview], [True, True])
 group_preview = subprocess.run([sys.executable, os.path.join(HERE, "..", "scripts", "remote.py"),
                                 "switch-preview", "host:local", "group", "--once"],
                                capture_output=True, text=True, env=env).stdout

@@ -655,6 +655,18 @@ class AgentPreview:
         return any(a["state"] in self.view.MOVING for g in self.groups for a in g["agents"])
 
 
+def write_preview_frame(text):
+    """Replace fzf's streaming preview with one frame, atomically.
+
+    fzf empties the preview on a clear-screen code and repaints whatever it has
+    read every 100ms, so a frame sent as separate lines flashes half-drawn. As
+    one line, with rows split by cursor-back + IND (which fzf turns into line
+    breaks), the clear and the whole frame land together."""
+    rows = text.rstrip("\n").split("\n")
+    sys.stdout.write("\x1b[2J" + "\x1b[9999D\x1bD".join(rows) + "\n")
+    sys.stdout.flush()
+
+
 def switch_preview(sid, kind, *flags):
     """Continuously render fzf's preview area: the agent dial, or the selected window's active pane."""
     once = "--once" in flags
@@ -663,10 +675,10 @@ def switch_preview(sid, kind, *flags):
         while True:
             columns = max(1, int(os.environ.get("FZF_PREVIEW_COLUMNS", "80")))
             rows = max(1, int(os.environ.get("FZF_PREVIEW_LINES", "24")))
-            sys.stdout.write("\x1b[H\x1b[2J" + preview.frame(columns, rows))
-            sys.stdout.flush()
             if once:
+                sys.stdout.write(preview.frame(columns, rows))
                 return
+            write_preview_frame(preview.frame(columns, rows))
             # Animate only while something works; otherwise just keep the clock current.
             time.sleep(1 / preview.fps if preview.moving() else 1)
     if kind != "session":
@@ -688,12 +700,12 @@ def switch_preview(sid, kind, *flags):
             frame = local("capture-pane", "-p", "-e", "-t", target, check=False)
             frame = fit_switch_preview(frame, columns, rows)
         title = clip_switch_preview_line(title, columns)
-        # Home + clear makes the long-running preview update in place. fzf stops
-        # this process whenever selection changes or the popup closes.
-        sys.stdout.write("\x1b[H\x1b[2J\x1b[1m" + title + "\x1b[0m\n\n" + frame + "\n")
-        sys.stdout.flush()
+        text = "\x1b[1m" + title + "\x1b[0m\n\n" + frame
         if once:
+            sys.stdout.write(text + "\n")
             return
+        # fzf stops this process whenever selection changes or the popup closes.
+        write_preview_frame(text)
         time.sleep(1)
 
 
@@ -927,7 +939,8 @@ def switch_preview_full(sid):
                 else:
                     env = dict(os.environ, FZF_PREVIEW_COLUMNS=str(columns), FZF_PREVIEW_LINES=str(lines))
                     frame = subprocess.check_output(SELF + ["switch-preview", sid, "session", "--once"], env=env)
-                    terminal.write(frame.replace(b"\n", b"\r\n").rstrip(b"\r\n"))
+                    frame = frame.rstrip(b"\n").replace(b"\n", b"\x1b[K\r\n")
+                    terminal.write(b"\x1b[?2026h\x1b[H" + frame + b"\x1b[K\x1b[J\x1b[?2026l")
                 if not select.select([fd], [], [], 1 / agents.fps if agents and agents.moving() else 1)[0]:
                     continue
                 pressed = os.read(fd, 1)
