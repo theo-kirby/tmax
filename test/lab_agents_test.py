@@ -48,6 +48,15 @@ class ReporterTests(unittest.TestCase):
         with patch.object(agent_status,"processes",return_value={}),patch.object(agent_status,"run",return_value="%1\t55\tproxy\t/tmp\tsb1x\t/tmp/socket"):
             agents.collect_interactive()
         values=agents.snapshot();self.assertEqual(len(values),1);self.assertEqual(values[0]["activity"],"stopped");self.assertEqual(values[0]["attention"],"review exit")
+    def test_unconfirmed_hook_state_expires_while_process_lives(self):
+        agents.hook("codex","PermissionRequest",{},(100,"first"))
+        table={100:(1,"first","codex app-server")}
+        with patch.object(agent_status,"processes",return_value=table),patch.object(agent_status,"run",return_value=""):
+            agents.collect_interactive()
+            self.assertEqual(agents.snapshot()[0]["attention"],"approval")
+            with patch.object(agents,"HOOK_STATE_TTL",-1):agents.collect_interactive()
+        current=agents.snapshot()[0]
+        self.assertEqual((current["activity"],current["attention"]),("unknown",""))
     def test_surviving_process_loses_deleted_tmux_location(self):
         sid=agents.identity("session","claude",100,"first")
         value=agents.base(sid,sid,"claude","process observation")

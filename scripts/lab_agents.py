@@ -133,6 +133,15 @@ def hook(provider,event,payload,owner,pane=""):
     record(value,event,pid,started)
 
 
+# How long a hook-reported state holds for a process no terminal indicator can confirm.
+HOOK_STATE_TTL=30*60
+
+
+def last_hook_age(value):
+    try:return (datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(value.get("lastHook",{}).get("at","").replace("Z","+00:00"))).total_seconds()
+    except (ValueError,TypeError,AttributeError):return float("inf")
+
+
 def collect_interactive():
     import agent_status
     table=agent_status.processes()
@@ -173,9 +182,7 @@ def collect_interactive():
                     background_work=state=="working" and attention=="background work"
                     if background_work:attention=""
                     hook=value.get("lastHook",{})
-                    hook_age=float("inf")
-                    try:hook_age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(hook.get("at","").replace("Z","+00:00"))).total_seconds()
-                    except (ValueError,TypeError):pass
+                    hook_age=last_hook_age(value)
                     if state=="idle" and hook.get("activity") in ("working","starting","retrying","waiting"):
                         # Claude keeps its input prompt visible during work.
                         # A weak ready indicator cannot cancel a lifecycle event.
@@ -225,6 +232,10 @@ def collect_interactive():
                 value["attachment"]=None
                 record(dict(value,observedAt=now()),"location_lost",pid,started)
             else:
+                if value.get("source")=="provider hook" and value["activity"] in ("working","starting","retrying","waiting") and last_hook_age(value)>HOOK_STATE_TTL:
+                    # Nothing on screen confirms an old lifecycle event (an approval
+                    # answered elsewhere fires no hook); liveness alone must not keep it current.
+                    value.update(activity="unknown",attention="",summary="Alive; no lifecycle event for "+str(HOOK_STATE_TTL//60)+" minutes")
                 value["observedAt"]=now();record(value,"heartbeat",pid,started)
         elif value["activity"]!="stopped":
             value.update(activity="stopped",attention="review exit",summary="Process ended without an observed session-end event",stopReason="Process disappeared; outcome unknown",observedAt=now())

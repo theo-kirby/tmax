@@ -63,7 +63,10 @@ def agent_state(members, now):
     current = [s for s in members if now - parse_time(s.get("observedAt")) < 90]
     if not current:
         return "stale"
-    if any(s.get("attention") for s in current):
+    # "Needs you" means blocked on the operator: a pending question or approval,
+    # or a runner asking for help. Review flags on a settled agent are not that.
+    if any(s.get("attention") and (s.get("activity") == "waiting" or s["attention"] == "runner requests help")
+           for s in current):
         return "attention"
     for state in ("retrying", "working", "starting", "waiting", "idle"):
         if any(s.get("activity") == state for s in current):

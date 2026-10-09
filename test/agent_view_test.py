@@ -21,11 +21,16 @@ class AgentViewTests(unittest.TestCase):
     def test_groups_by_session_and_hides_connected_backends(self):
         groups = view.hierarchy([session("1", "mba", "lab", "working"), session("2", "mba", "lab"),
                                  dict(session("3", "mba", "lab"), role="backend", parentId="1", attachment=None),
-                                 session("4", "sb1x", "cadex", attention="approval"),
+                                 session("4", "sb1x", "cadex", "waiting", attention="approval"),
                                  session("5", "mba", "old", "stopped")])
         self.assertEqual([(g["name"], len(g["agents"]), g["state"]) for g in groups],
                          [("cadex", 1, "attention"), ("lab", 2, "working")])
         self.assertLess(groups[0]["end"], groups[1]["start"])
+
+    def test_needs_you_only_while_blocked_on_the_operator(self):
+        groups = view.hierarchy([session("1", "mba", "a", attention="review failure"),
+                                 session("2", "mba", "b", "waiting", attention="answer")])
+        self.assertEqual([(g["name"], g["state"]) for g in groups], [("a", "idle"), ("b", "attention")])
 
     def test_old_reports_are_stale(self):
         old = session("1", "mba", "lab", "working", observedAt="2020-01-01T00:00:00Z")
